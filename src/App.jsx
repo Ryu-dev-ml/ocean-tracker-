@@ -264,7 +264,7 @@ export default function App() {
             </div>
             <div style={{ marginTop:7, padding:"5px 8px", borderRadius:3, fontSize:9,
               background:"rgba(14,165,233,0.05)", border:"1px solid rgba(14,165,233,0.1)",
-              color: timeKey.startsWith("+")??"#c77dff":"#4a7fa5", letterSpacing:"0.07em" }}>
+              color: timeKey.startsWith("+")?"#c77dff":"#4a7fa5", letterSpacing:"0.07em" }}>
               {timeKey.startsWith("+")?"🔮 AI PREDICTION":timeKey==="now"?"📡 LIVE DATA":"📼 HISTORICAL"}
             </div>
           </div>
