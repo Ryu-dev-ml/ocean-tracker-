@@ -1,0 +1,537 @@
+import { useState, useEffect, useRef, useCallback } from "react";
+
+const POLLUTION_TYPES = {
+  oil_spill:           { label: "Oil Spill",           color: "#ff3b3b", bg: "rgba(255,59,59,0.15)"   },
+  plastic_waste:       { label: "Plastic Waste",        color: "#ff9f1c", bg: "rgba(255,159,28,0.15)"  },
+  chemical_pollution:  { label: "Chemical Pollution",   color: "#c77dff", bg: "rgba(199,125,255,0.15)" },
+  algae_bloom:         { label: "Algae Bloom",          color: "#06d6a0", bg: "rgba(6,214,160,0.15)"   },
+};
+
+const ZONES = [
+  { id:1, name:"Arabian Sea",    lat:67, lng:32, type:"oil_spill",          severity:89, area:142, trend:+12, confidence:94 },
+  { id:2, name:"Bay of Bengal",  lat:83, lng:38, type:"plastic_waste",      severity:64, area:87,  trend:+5,  confidence:88 },
+  { id:3, name:"South China Sea",lat:88, lng:52, type:"chemical_pollution", severity:72, area:56,  trend:-3,  confidence:91 },
+  { id:4, name:"Pacific Gyre",   lat:28, lng:55, type:"plastic_waste",      severity:95, area:310, trend:+18, confidence:97 },
+  { id:5, name:"Mediterranean",  lat:51, lng:28, type:"algae_bloom",        severity:47, area:33,  trend:-7,  confidence:85 },
+  { id:6, name:"Persian Gulf",   lat:61, lng:36, type:"oil_spill",          severity:78, area:95,  trend:+9,  confidence:92 },
+];
+
+const TIMELINE = {
+  "-72h": [55,48,67,82,44,61],
+  "-48h": [60,52,69,85,46,66],
+  "-24h": [72,58,71,90,45,72],
+  "now":  [89,64,72,95,47,78],
+  "+24h": [96,70,68,99,49,83],
+  "+48h": [99,75,65,99,52,87],
+};
+
+const CHAT_RESPONSES = {
+  mumbai:  `📍 Arabian Sea / Mumbai Region\n\nACTIVE ALERT: Oil spill at 18.9°N, 72.8°E\n• Severity: 89/100 (Critical)\n• Area: 142 km²\n• Growth: +12 km²/day\n• Forecast: 20 km NNE in 24hrs\n\nRecommendation: Immediate containment advised.`,
+  predict: `🔮 48-Hour AI Forecast (LSTM + Transformer)\n\n• Arabian Sea oil spill → severity 96, expanding NE\n• Pacific Gyre plastic → critical, stable accumulation\n• Persian Gulf → breach threshold in ~18hrs\n\nConfidence: 91%`,
+  alert:   `🔔 Active Alerts (Last 24h)\n\n1. CRITICAL — Arabian Sea oil spill (89/100)\n2. CRITICAL — Pacific Gyre plastic (95/100)\n3. HIGH     — Persian Gulf chemical (78/100)\n4. MONITOR  — Bay of Bengal plastic (64/100)\n\nTotal zones monitored: 6`,
+  help:    `🤖 OceanAI Commands:\n\n• "show pollution near mumbai"\n• "predict next affected region"\n• "show alerts"\n• "oil spill status"\n• "compare regions"\n• "explain detection"`,
+  default: (q) => `Analyzing: "${q}"\n\nProcessing via YOLOv8 + U-Net + ViT ensemble...\nQuery understood. Specify a region, pollution type, or timeframe for detailed satellite analysis.`,
+};
+
+function getResponse(msg) {
+  const m = msg.toLowerCase();
+  if (m.includes("mumbai") || m.includes("arabian")) return CHAT_RESPONSES.mumbai;
+  if (m.includes("predict") || m.includes("forecast") || m.includes("next")) return CHAT_RESPONSES.predict;
+  if (m.includes("alert")) return CHAT_RESPONSES.alert;
+  if (m.includes("help") || m.includes("command")) return CHAT_RESPONSES.help;
+  return CHAT_RESPONSES.default(msg);
+}
+
+const SeverityRing = ({ value, size = 44, color }) => {
+  const r = (size - 8) / 2;
+  const circ = 2 * Math.PI * r;
+  const offset = circ - (value / 100) * circ;
+  return (
+    <svg width={size} height={size} style={{ transform: "rotate(-90deg)" }}>
+      <circle cx={size/2} cy={size/2} r={r} fill="none" stroke="rgba(255,255,255,0.06)" strokeWidth={4}/>
+      <circle cx={size/2} cy={size/2} r={r} fill="none" stroke={color} strokeWidth={4}
+        strokeDasharray={circ} strokeDashoffset={offset} strokeLinecap="round"
+        style={{ transition: "stroke-dashoffset 1s ease" }}/>
+    </svg>
+  );
+};
+
+const MiniChart = ({ data, color, height = 40 }) => {
+  const max = Math.max(...data), min = Math.min(...data);
+  const pts = data.map((v, i) => {
+    const x = (i / (data.length - 1)) * 100;
+    const y = height - ((v - min) / (max - min + 1)) * (height - 8) - 4;
+    return `${x},${y}`;
+  }).join(" ");
+  return (
+    <svg width="100%" height={height} viewBox={`0 0 100 ${height}`} preserveAspectRatio="none">
+      <polyline points={`0,${height} ${pts} 100,${height}`} fill={`${color}22`} stroke="none"/>
+      <polyline points={pts} fill="none" stroke={color} strokeWidth="1.5" strokeLinejoin="round"/>
+    </svg>
+  );
+};
+
+export default function App() {
+  const [tab, setTab]           = useState("map");
+  const [timeKey, setTimeKey]   = useState("now");
+  const [selected, setSelected] = useState(null);
+  const [chatOpen, setChatOpen] = useState(false);
+  const [messages, setMessages] = useState([
+    { role:"ai", text:"👋 OceanAI online. Monitoring 6 ocean zones via Sentinel-1 + Landsat-8. Type 'help' for commands." }
+  ]);
+  const [input, setInput]       = useState("");
+  const [typing, setTyping]     = useState(false);
+  const [filters, setFilters]   = useState(new Set(Object.keys(POLLUTION_TYPES)));
+  const [pulse, setPulse]       = useState(true);
+  const chatEnd = useRef(null);
+  const timeKeys = Object.keys(TIMELINE);
+
+  const currentZones = ZONES.map((z, i) => ({ ...z, severity: TIMELINE[timeKey][i] }));
+  const filtered     = currentZones.filter(z => filters.has(z.type));
+  const avgSev       = Math.round(filtered.reduce((s,z) => s + z.severity, 0) / (filtered.length || 1));
+  const critCount    = filtered.filter(z => z.severity >= 80).length;
+  const totalArea    = filtered.reduce((s,z) => s + z.area, 0);
+
+  useEffect(() => { chatEnd.current?.scrollIntoView({ behavior:"smooth" }); }, [messages, typing]);
+  useEffect(() => { const iv = setInterval(() => setPulse(p => !p), 2000); return () => clearInterval(iv); }, []);
+
+  const sendChat = useCallback(() => {
+    if (!input.trim()) return;
+    const txt = input.trim();
+    setMessages(m => [...m, { role:"user", text:txt }]);
+    setInput("");
+    setTyping(true);
+    setTimeout(() => {
+      setTyping(false);
+      setMessages(m => [...m, { role:"ai", text: getResponse(txt) }]);
+    }, 1200);
+  }, [input]);
+
+  const S = {
+    app:    { minHeight:"100vh", background:"#050d1a", fontFamily:"'DM Mono','Courier New',monospace", color:"#c8deff", position:"relative", overflow:"hidden" },
+    header: { position:"sticky", top:0, zIndex:100, background:"rgba(5,13,26,0.95)", backdropFilter:"blur(12px)", borderBottom:"1px solid rgba(14,165,233,0.15)", padding:"0 20px", display:"flex", alignItems:"center", justifyContent:"space-between", height:54 },
+    logo:   { fontFamily:"Syne,sans-serif", fontWeight:800, fontSize:16, letterSpacing:"0.08em", color:"#e0f2fe" },
+    nav:    { display:"flex", gap:2 },
+    tabBtn: (active) => ({ background:"none", border:"none", cursor:"pointer", fontFamily:"inherit", padding:"6px 12px", fontSize:10, letterSpacing:"0.12em", color: active ? "#0ea5e9" : "#4a7fa5", borderBottom: active ? "2px solid #0ea5e9" : "2px solid transparent" }),
+    statsBar: { display:"flex", gap:1, background:"rgba(14,165,233,0.03)", borderBottom:"1px solid rgba(14,165,233,0.08)" },
+    statCell: { flex:1, padding:"8px 14px", borderRight:"1px solid rgba(14,165,233,0.06)" },
+    main:   { display:"flex", height:"calc(100vh - 106px)" },
+    sidebar:{ width:252, borderRight:"1px solid rgba(14,165,233,0.1)", background:"rgba(5,13,26,0.6)", display:"flex", flexDirection:"column", overflow:"hidden" },
+    viewport:{ flex:1, position:"relative", overflow:"hidden" },
+  };
+
+  return (
+    <div style={S.app}>
+      <style>{`
+        *{box-sizing:border-box;margin:0;padding:0}
+        ::-webkit-scrollbar{width:3px;background:#0a1628}
+        ::-webkit-scrollbar-thumb{background:#1e3a5f;border-radius:2px}
+        .zcard{transition:transform 0.2s;cursor:pointer}
+        .zcard:hover{transform:translateX(3px)}
+        .tbtn{cursor:pointer;transition:all 0.2s;background:none;border:none;font-family:inherit}
+        .tbtn:hover{opacity:0.8}
+        .cinput{background:#0a1628;border:1px solid #1e3a5f;color:#c8deff;font-family:inherit;outline:none;transition:border 0.2s}
+        .cinput:focus{border-color:#0ea5e9}
+        .sbtn{cursor:pointer;background:#0ea5e9;border:none;transition:background 0.2s;color:#fff;font-family:inherit}
+        .sbtn:hover{background:#38bdf8}
+        @keyframes pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:0.4;transform:scale(1.6)}}
+        @keyframes blink{0%,100%{opacity:1}50%{opacity:0}}
+        @keyframes fadeUp{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+        @keyframes slideIn{from{opacity:0;transform:translateX(12px)}to{opacity:1;transform:none}}
+        @keyframes scanline{0%{top:-2px}100%{top:100%}}
+        .scanline{position:fixed;left:0;right:0;height:1px;background:linear-gradient(transparent,rgba(14,165,233,0.06),transparent);animation:scanline 5s linear infinite;pointer-events:none;z-index:0}
+        .grid-bg{position:fixed;inset:0;background-image:linear-gradient(rgba(14,165,233,0.025) 1px,transparent 1px),linear-gradient(90deg,rgba(14,165,233,0.025) 1px,transparent 1px);background-size:40px 40px;pointer-events:none;z-index:0}
+        @media(max-width:700px){.sidebar-hide{display:none!important}.viewport-full{flex:1!important}}
+      `}</style>
+
+      <div className="grid-bg"/>
+      <div className="scanline"/>
+
+      {/* Header */}
+      <header style={S.header}>
+        <div style={{ display:"flex", alignItems:"center", gap:10, position:"relative", zIndex:1 }}>
+          <div style={{ position:"relative", width:30, height:30 }}>
+            <div style={{ position:"absolute", inset:0, borderRadius:"50%", border:"2px solid #0ea5e9", opacity:0.3 }}/>
+            <div style={{ position:"absolute", inset:4, borderRadius:"50%", background:"radial-gradient(circle,#0ea5e9,#0369a1)" }}/>
+            <div style={{ position:"absolute", top:"50%", left:"50%", transform:"translate(-50%,-50%)", width:5, height:5, borderRadius:"50%", background:"#fff", animation:"pulse 2s infinite" }}/>
+          </div>
+          <div>
+            <div style={S.logo}>OCEAN<span style={{ color:"#0ea5e9" }}>AI</span></div>
+            <div style={{ fontSize:9, color:"#2d5a7a", letterSpacing:"0.2em" }}>POLLUTION TRACKING v2.0</div>
+          </div>
+        </div>
+        <nav style={S.nav}>
+          {[["map","MAP"],["analytics","ANALYTICS"],["detection","AI ENGINE"],["alerts","ALERTS"]].map(([k,l]) => (
+            <button key={k} style={S.tabBtn(tab===k)} onClick={() => setTab(k)}>{l}</button>
+          ))}
+        </nav>
+        <div style={{ display:"flex", alignItems:"center", gap:12, position:"relative", zIndex:1 }}>
+          {critCount > 0 && (
+            <span style={{ background:"rgba(255,59,59,0.15)", color:"#ff3b3b", border:"1px solid rgba(255,59,59,0.3)", borderRadius:3, padding:"2px 8px", fontSize:9, letterSpacing:"0.1em" }}>
+              ⚠ {critCount} CRITICAL
+            </span>
+          )}
+          <div style={{ display:"flex", alignItems:"center", gap:5, fontSize:10, color:"#06d6a0" }}>
+            <div style={{ width:6, height:6, borderRadius:"50%", background:"#06d6a0", animation:"pulse 1.5s infinite" }}/>
+            LIVE
+          </div>
+        </div>
+      </header>
+
+      {/* Stats bar */}
+      <div style={{ ...S.statsBar, position:"relative", zIndex:1 }}>
+        {[
+          ["ZONES",       filtered.length, "",     "#0ea5e9"],
+          ["AVG SEVERITY",avgSev,          "/100", avgSev>75?"#ff3b3b":avgSev>50?"#ff9f1c":"#06d6a0"],
+          ["TOTAL AREA",  totalArea,       " km²", "#c77dff"],
+          ["CRITICAL",    critCount,       "",     "#ff3b3b"],
+          ["MODEL ACC",   "94.2",          "%",    "#06d6a0"],
+          ["SATELLITES",  "S1+L8",         "",     "#ff9f1c"],
+        ].map(([label,val,unit,color],i) => (
+          <div key={i} style={S.statCell}>
+            <div style={{ fontSize:8, color:"#2d5a7a", letterSpacing:"0.15em", marginBottom:2 }}>{label}</div>
+            <div style={{ fontSize:15, fontFamily:"Syne,sans-serif", fontWeight:700, color }}>
+              {val}<span style={{ fontSize:9, color:"#4a7fa5" }}>{unit}</span>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {/* Main */}
+      <div style={{ ...S.main, position:"relative", zIndex:1 }}>
+
+        {/* Sidebar */}
+        <div className="sidebar-hide" style={S.sidebar}>
+          {/* Filters */}
+          <div style={{ padding:"12px 14px", borderBottom:"1px solid rgba(14,165,233,0.08)" }}>
+            <div style={{ fontSize:9, color:"#2d5a7a", letterSpacing:"0.2em", marginBottom:8 }}>FILTER</div>
+            <div style={{ display:"flex", flexWrap:"wrap", gap:5 }}>
+              {Object.entries(POLLUTION_TYPES).map(([key,val]) => (
+                <div key={key} onClick={() => setFilters(f => { const n=new Set(f); n.has(key)?n.delete(key):n.add(key); return n; })}
+                  style={{ padding:"3px 8px", borderRadius:3, fontSize:9, cursor:"pointer", letterSpacing:"0.08em", transition:"all 0.2s",
+                    border:`1px solid ${filters.has(key)?val.color:"rgba(255,255,255,0.08)"}`,
+                    background: filters.has(key)?val.bg:"transparent",
+                    color: filters.has(key)?val.color:"#2d5a7a" }}>
+                  ● {val.label.toUpperCase().split(" ")[0]}
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Zone list */}
+          <div style={{ flex:1, overflowY:"auto", padding:"6px 0" }}>
+            <div style={{ padding:"4px 14px 6px", fontSize:9, color:"#2d5a7a", letterSpacing:"0.2em" }}>ACTIVE ZONES ({filtered.length})</div>
+            {filtered.sort((a,b) => b.severity - a.severity).map(zone => {
+              const pt = POLLUTION_TYPES[zone.type];
+              const sel = selected?.id === zone.id;
+              return (
+                <div key={zone.id} className="zcard" onClick={() => setSelected(sel?null:zone)}
+                  style={{ padding:"9px 14px", margin:"2px 6px", borderRadius:4,
+                    background: sel?"rgba(14,165,233,0.08)":"transparent",
+                    border:`1px solid ${sel?"rgba(14,165,233,0.2)":"transparent"}` }}>
+                  <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start" }}>
+                    <div>
+                      <div style={{ fontSize:11, color:"#c8deff", marginBottom:2 }}>{zone.name}</div>
+                      <div style={{ fontSize:9, color:pt.color, letterSpacing:"0.08em" }}>● {pt.label.toUpperCase()}</div>
+                    </div>
+                    <div style={{ position:"relative", width:44, height:44 }}>
+                      <SeverityRing value={zone.severity} size={44} color={zone.severity>=80?"#ff3b3b":zone.severity>=60?"#ff9f1c":"#06d6a0"}/>
+                      <div style={{ position:"absolute", inset:0, display:"flex", alignItems:"center", justifyContent:"center", fontSize:9, color:"#c8deff" }}>{zone.severity}</div>
+                    </div>
+                  </div>
+                  <div style={{ display:"flex", justifyContent:"space-between", marginTop:5, fontSize:9, color:"#2d5a7a" }}>
+                    <span>{zone.area} km²</span>
+                    <span style={{ color: zone.trend>0?"#ff3b3b":"#06d6a0" }}>{zone.trend>0?"▲":"▼"} {Math.abs(zone.trend)} km²/day</span>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          {/* Time slider */}
+          <div style={{ padding:"10px 14px", borderTop:"1px solid rgba(14,165,233,0.1)" }}>
+            <div style={{ fontSize:9, color:"#2d5a7a", letterSpacing:"0.2em", marginBottom:7 }}>⏳ TIME TRAVEL</div>
+            <div style={{ display:"flex", gap:2 }}>
+              {timeKeys.map(k => (
+                <button key={k} className="tbtn" onClick={() => setTimeKey(k)} style={{
+                  flex:1, padding:"5px 2px", borderRadius:3, fontSize:8,
+                  border:`1px solid ${timeKey===k?"#0ea5e9":"rgba(14,165,233,0.12)"}`,
+                  background: timeKey===k?"rgba(14,165,233,0.15)":"transparent",
+                  color: timeKey===k?"#0ea5e9":"#2d5a7a",
+                  fontStyle: k.startsWith("+")?"italic":"normal",
+                }}>{k}</button>
+              ))}
+            </div>
+            <div style={{ marginTop:7, padding:"5px 8px", borderRadius:3, fontSize:9,
+              background:"rgba(14,165,233,0.05)", border:"1px solid rgba(14,165,233,0.1)",
+              color: timeKey.startsWith("+")??"#c77dff":"#4a7fa5", letterSpacing:"0.07em" }}>
+              {timeKey.startsWith("+")?"🔮 AI PREDICTION":timeKey==="now"?"📡 LIVE DATA":"📼 HISTORICAL"}
+            </div>
+          </div>
+        </div>
+
+        {/* Viewport */}
+        <div className="viewport-full" style={S.viewport}>
+
+          {/* MAP TAB */}
+          {tab === "map" && (
+            <div style={{ position:"relative", width:"100%", height:"100%" }}>
+              <div style={{
+                position:"absolute", inset:0,
+                background:"radial-gradient(ellipse at 30% 60%,rgba(3,56,110,0.4) 0%,transparent 60%),radial-gradient(ellipse at 70% 30%,rgba(6,31,63,0.5) 0%,transparent 50%),linear-gradient(180deg,#021428 0%,#031d3b 40%,#042149 70%,#051a35 100%)",
+              }}>
+                {/* Grid lines */}
+                {[20,40,60,80].map(p => <div key={p} style={{ position:"absolute",left:0,right:0,top:`${p}%`,borderTop:"1px solid rgba(14,165,233,0.035)" }}/>)}
+                {[20,40,60,80].map(p => <div key={p} style={{ position:"absolute",top:0,bottom:0,left:`${p}%`,borderLeft:"1px solid rgba(14,165,233,0.035)" }}/>)}
+
+                {/* Stylised continents */}
+                <svg style={{ position:"absolute",inset:0,width:"100%",height:"100%",opacity:0.1 }} viewBox="0 0 100 70">
+                  <path d="M15,15 L30,12 L38,18 L35,30 L25,32 L18,28 Z" fill="#1e3a5f"/>
+                  <path d="M42,10 L65,8 L72,20 L75,35 L68,45 L55,48 L48,38 L44,25 Z" fill="#1e3a5f"/>
+                  <path d="M55,50 L65,48 L68,58 L60,62 L54,58 Z" fill="#1e3a5f"/>
+                  <path d="M6,18 L12,14 L14,22 L10,28 L5,25 Z" fill="#1e3a5f"/>
+                  <path d="M78,20 L92,18 L95,30 L88,38 L80,32 Z" fill="#1e3a5f"/>
+                </svg>
+
+                {/* Zones */}
+                {filtered.map(zone => {
+                  const pt  = POLLUTION_TYPES[zone.type];
+                  const sel = selected?.id === zone.id;
+                  const crit = zone.severity >= 80;
+                  return (
+                    <div key={zone.id} onClick={() => setSelected(sel?null:zone)}
+                      style={{ position:"absolute", left:`${zone.lat}%`, top:`${zone.lng}%`, transform:"translate(-50%,-50%)", cursor:"pointer", zIndex:sel?10:5 }}>
+                      <div style={{ position:"absolute", width:zone.area*0.45+28, height:zone.area*0.45+28, borderRadius:"50%", transform:"translate(-50%,-50%)", left:"50%", top:"50%", background:`radial-gradient(circle,${pt.color}20 0%,${pt.color}08 50%,transparent 70%)`, transition:"all 0.8s" }}/>
+                      {crit && <>
+                        <div style={{ position:"absolute", width:36, height:36, borderRadius:"50%", border:`1px solid ${pt.color}`, transform:"translate(-50%,-50%)", left:"50%", top:"50%", opacity:pulse?0.5:0.1, transition:"opacity 1s", scale:pulse?"1.5":"1" }}/>
+                        <div style={{ position:"absolute", width:22, height:22, borderRadius:"50%", border:`1px solid ${pt.color}`, transform:"translate(-50%,-50%)", left:"50%", top:"50%", opacity:0.3 }}/>
+                      </>}
+                      <div style={{ position:"relative", zIndex:2, width:sel?13:9, height:sel?13:9, borderRadius:"50%", background:pt.color, border:`2px solid ${sel?"#fff":pt.color+"88"}`, boxShadow:`0 0 ${crit?12:5}px ${pt.color}`, transition:"all 0.2s" }}/>
+                      {sel && (
+                        <div style={{ position:"absolute", left:"50%", top:-34, transform:"translateX(-50%)", background:"rgba(5,13,26,0.92)", border:`1px solid ${pt.color}`, borderRadius:4, padding:"3px 8px", whiteSpace:"nowrap", fontSize:9, color:pt.color, letterSpacing:"0.08em", animation:"fadeUp 0.2s ease" }}>
+                          {zone.name.toUpperCase()} — {zone.severity}/100
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+
+                <div style={{ position:"absolute", bottom:8, left:10, fontSize:9, color:"#1e3a5f", letterSpacing:"0.08em" }}>GLOBAL OCEAN VIEW · GEE REALTIME</div>
+                <div style={{ position:"absolute", bottom:8, right:10, fontSize:9, color:"#1e3a5f" }}>{new Date().toISOString().slice(0,19)}Z</div>
+              </div>
+
+              {/* Zone detail panel */}
+              {selected && (
+                <div style={{ position:"absolute", top:14, right:14, width:230, background:"rgba(5,13,26,0.96)", backdropFilter:"blur(12px)", border:`1px solid ${POLLUTION_TYPES[selected.type].color}44`, borderRadius:6, padding:14, animation:"slideIn 0.25s ease", boxShadow:`0 0 20px ${POLLUTION_TYPES[selected.type].color}18` }}>
+                  <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:10 }}>
+                    <div>
+                      <div style={{ fontFamily:"Syne,sans-serif", fontWeight:700, fontSize:13, color:"#e0f2fe" }}>{selected.name}</div>
+                      <div style={{ fontSize:9, color:POLLUTION_TYPES[selected.type].color, marginTop:2, letterSpacing:"0.08em" }}>● {POLLUTION_TYPES[selected.type].label.toUpperCase()}</div>
+                    </div>
+                    <button onClick={() => setSelected(null)} style={{ background:"none",border:"none",color:"#4a7fa5",cursor:"pointer",fontSize:13 }}>✕</button>
+                  </div>
+                  {[
+                    ["Severity",    `${selected.severity}/100`, selected.severity>=80?"#ff3b3b":"#ff9f1c"],
+                    ["Area",        `${selected.area} km²`,     "#c8deff"],
+                    ["Growth",      `${selected.trend>0?"+":""}${selected.trend} km²/day`, selected.trend>0?"#ff3b3b":"#06d6a0"],
+                    ["Confidence",  `${selected.confidence}%`,  "#06d6a0"],
+                  ].map(([k,v,c]) => (
+                    <div key={k} style={{ display:"flex",justifyContent:"space-between",padding:"5px 0",borderBottom:"1px solid rgba(14,165,233,0.07)",fontSize:11 }}>
+                      <span style={{ color:"#4a7fa5",fontSize:9,letterSpacing:"0.1em" }}>{k.toUpperCase()}</span>
+                      <span style={{ color:c }}>{v}</span>
+                    </div>
+                  ))}
+                  <div style={{ marginTop:8 }}>
+                    <div style={{ fontSize:9, color:"#2d5a7a", marginBottom:3, letterSpacing:"0.1em" }}>SEVERITY TREND</div>
+                    <MiniChart data={Object.values(TIMELINE).map(arr => arr[selected.id-1])} color={POLLUTION_TYPES[selected.type].color}/>
+                  </div>
+                  {selected.severity >= 70 && (
+                    <div style={{ marginTop:8,padding:"5px 8px",borderRadius:3,fontSize:9,background:"rgba(255,59,59,0.08)",border:"1px solid rgba(255,59,59,0.2)",color:"#ff9f9f",letterSpacing:"0.07em" }}>
+                      ⚠ ALERT ACTIVE · ATTENTION REQUIRED
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* ANALYTICS TAB */}
+          {tab === "analytics" && (
+            <div style={{ padding:20, height:"100%", overflowY:"auto" }}>
+              <div style={{ fontFamily:"Syne,sans-serif",fontWeight:700,fontSize:17,color:"#e0f2fe",marginBottom:18,letterSpacing:"0.05em" }}>ANALYTICS DASHBOARD</div>
+              <div style={{ display:"grid",gridTemplateColumns:"1fr 1fr",gap:14,marginBottom:14 }}>
+                {[
+                  { label:"DAILY SEVERITY (12 DAYS)", data:[42,58,61,55,70,67,75,72,80,78,85,89], color:"#0ea5e9" },
+                  { label:"POLLUTED AREA km² (12 MONTHS)", data:[310,328,345,340,365,380,370,392,405,418,430,449], color:"#c77dff" },
+                ].map(({ label,data,color }) => (
+                  <div key={label} style={{ background:"rgba(14,165,233,0.03)",border:"1px solid rgba(14,165,233,0.09)",borderRadius:6,padding:14 }}>
+                    <div style={{ fontSize:9,color:"#2d5a7a",letterSpacing:"0.18em",marginBottom:10 }}>{label}</div>
+                    <MiniChart data={data} color={color} height={72}/>
+                  </div>
+                ))}
+              </div>
+              <div style={{ background:"rgba(14,165,233,0.03)",border:"1px solid rgba(14,165,233,0.09)",borderRadius:6,padding:14,marginBottom:14 }}>
+                <div style={{ fontSize:9,color:"#2d5a7a",letterSpacing:"0.18em",marginBottom:12 }}>MULTI-CLASS DETECTION BREAKDOWN</div>
+                <div style={{ display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:10 }}>
+                  {Object.entries(POLLUTION_TYPES).map(([key,val]) => {
+                    const zones = currentZones.filter(z => z.type===key);
+                    const pct   = zones.length ? Math.round(zones.reduce((s,z) => s+z.severity,0)/zones.length) : 0;
+                    return (
+                      <div key={key} style={{ textAlign:"center",padding:"10px 6px",background:val.bg,border:`1px solid ${val.color}33`,borderRadius:4 }}>
+                        <SeverityRing value={pct} size={48} color={val.color}/>
+                        <div style={{ fontSize:17,fontFamily:"Syne,sans-serif",fontWeight:700,color:val.color,marginTop:-34,marginBottom:30 }}>{pct}</div>
+                        <div style={{ fontSize:8,color:val.color,letterSpacing:"0.08em" }}>{val.label.toUpperCase().split(" ")[0]}</div>
+                        <div style={{ fontSize:9,color:"#4a7fa5",marginTop:2 }}>{zones.length} zone{zones.length!==1?"s":""}</div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+              <div style={{ background:"rgba(14,165,233,0.03)",border:"1px solid rgba(14,165,233,0.09)",borderRadius:6,padding:14 }}>
+                <div style={{ fontSize:9,color:"#2d5a7a",letterSpacing:"0.18em",marginBottom:12 }}>REGION COMPARISON</div>
+                {currentZones.map(zone => {
+                  const pt = POLLUTION_TYPES[zone.type];
+                  return (
+                    <div key={zone.id} style={{ marginBottom:9 }}>
+                      <div style={{ display:"flex",justifyContent:"space-between",fontSize:10,marginBottom:3 }}>
+                        <span style={{ color:"#c8deff" }}>{zone.name}</span>
+                        <span style={{ color:pt.color }}>{zone.severity}/100</span>
+                      </div>
+                      <div style={{ height:4,background:"rgba(255,255,255,0.05)",borderRadius:2,overflow:"hidden" }}>
+                        <div style={{ height:"100%",width:`${zone.severity}%`,borderRadius:2,background:`linear-gradient(90deg,${pt.color}77,${pt.color})`,transition:"width 0.8s" }}/>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* DETECTION TAB */}
+          {tab === "detection" && (
+            <div style={{ padding:20, height:"100%", overflowY:"auto" }}>
+              <div style={{ fontFamily:"Syne,sans-serif",fontWeight:700,fontSize:17,color:"#e0f2fe",marginBottom:18 }}>AI DETECTION ENGINE</div>
+              <div style={{ display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:14,marginBottom:16 }}>
+                {[
+                  { name:"YOLOv8m", role:"Fast Detection",     acc:91, speed:"23ms",  desc:"Real-time bounding box detection across 4 pollution classes", color:"#0ea5e9" },
+                  { name:"U-Net",   role:"Pixel Segmentation",  acc:94, speed:"180ms", desc:"Precise boundary mapping via ResNet34 encoder", color:"#c77dff" },
+                  { name:"ViT",     role:"Transformer Accuracy",acc:96, speed:"340ms", desc:"Vision Transformer for contextual pattern recognition", color:"#06d6a0" },
+                ].map(m => (
+                  <div key={m.name} style={{ background:`${m.color}08`,border:`1px solid ${m.color}22`,borderRadius:6,padding:14 }}>
+                    <div style={{ fontFamily:"Syne,sans-serif",fontWeight:700,fontSize:16,color:m.color,marginBottom:3 }}>{m.name}</div>
+                    <div style={{ fontSize:9,color:"#4a7fa5",letterSpacing:"0.13em",marginBottom:10 }}>{m.role.toUpperCase()}</div>
+                    <div style={{ fontSize:11,color:"#7ba8c8",marginBottom:10,lineHeight:1.6 }}>{m.desc}</div>
+                    {[["Accuracy",m.acc+"%"],["Inference",m.speed]].map(([k,v]) => (
+                      <div key={k} style={{ display:"flex",justifyContent:"space-between",padding:"4px 0",borderBottom:"1px solid rgba(255,255,255,0.04)",fontSize:10 }}>
+                        <span style={{ color:"#4a7fa5",fontSize:9,letterSpacing:"0.08em" }}>{k.toUpperCase()}</span>
+                        <span style={{ color:m.color }}>{v}</span>
+                      </div>
+                    ))}
+                  </div>
+                ))}
+              </div>
+              <div style={{ display:"grid",gridTemplateColumns:"1fr 1fr",gap:14 }}>
+                <div style={{ background:"rgba(14,165,233,0.03)",border:"1px solid rgba(14,165,233,0.09)",borderRadius:6,padding:14 }}>
+                  <div style={{ fontSize:9,color:"#2d5a7a",letterSpacing:"0.18em",marginBottom:10 }}>PREDICTION ENGINE</div>
+                  {[
+                    { name:"LSTM",                    desc:"Temporal sequence modeling — 48hr spread direction",    status:"ACTIVE" },
+                    { name:"Transformer Forecaster",  desc:"Attention-based future state estimation",                status:"ACTIVE" },
+                  ].map(m => (
+                    <div key={m.name} style={{ marginBottom:10,padding:9,background:"rgba(6,214,160,0.04)",border:"1px solid rgba(6,214,160,0.1)",borderRadius:4 }}>
+                      <div style={{ display:"flex",justifyContent:"space-between",marginBottom:3 }}>
+                        <span style={{ fontSize:11,color:"#c8deff" }}>{m.name}</span>
+                        <span style={{ fontSize:8,color:"#06d6a0",letterSpacing:"0.1em" }}>● {m.status}</span>
+                      </div>
+                      <div style={{ fontSize:9,color:"#4a7fa5",lineHeight:1.6 }}>{m.desc}</div>
+                    </div>
+                  ))}
+                </div>
+                <div style={{ background:"rgba(255,159,28,0.04)",border:"1px solid rgba(255,159,28,0.1)",borderRadius:6,padding:14 }}>
+                  <div style={{ fontSize:9,color:"#2d5a7a",letterSpacing:"0.18em",marginBottom:10 }}>GRAD-CAM EXPLAINABILITY</div>
+                  <div style={{ fontSize:10,color:"#7ba8c8",lineHeight:1.7,marginBottom:10 }}>
+                    Gradient-weighted Class Activation Mapping highlights which satellite image regions drove the AI detection decision.
+                  </div>
+                  <div style={{ display:"flex",gap:7 }}>
+                    {["Input Image","Grad-CAM","Overlay"].map((l,i) => (
+                      <div key={i} style={{ flex:1,height:58,borderRadius:3,display:"flex",alignItems:"flex-end",justifyContent:"center",paddingBottom:4,fontSize:7,color:"#ff9f1c",letterSpacing:"0.07em",border:"1px solid rgba(255,159,28,0.2)",background:i===0?"linear-gradient(135deg,#042149,#031d3b)":i===1?"linear-gradient(135deg,#7f0000,#ff4500,#ffff00)":"linear-gradient(135deg,#021428,rgba(255,69,0,0.4))" }}>
+                        {l.toUpperCase()}
+                      </div>
+                    ))}
+                  </div>
+                  <div style={{ marginTop:8,fontSize:9,color:"#4a7fa5" }}>Confidence: <span style={{ color:"#ff9f1c" }}>87.4%</span></div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* ALERTS TAB */}
+          {tab === "alerts" && (
+            <div style={{ padding:20, height:"100%", overflowY:"auto" }}>
+              <div style={{ fontFamily:"Syne,sans-serif",fontWeight:700,fontSize:17,color:"#e0f2fe",marginBottom:18 }}>SMART ALERT SYSTEM</div>
+              {currentZones.sort((a,b) => b.severity - a.severity).map((zone,i) => {
+                const pt    = POLLUTION_TYPES[zone.type];
+                const level = zone.severity>=80?"CRITICAL":zone.severity>=60?"HIGH":"MONITOR";
+                const lc    = zone.severity>=80?"#ff3b3b":zone.severity>=60?"#ff9f1c":"#0ea5e9";
+                return (
+                  <div key={zone.id} style={{ marginBottom:11,padding:14,borderRadius:6,background:`${pt.color}05`,border:`1px solid ${lc}2a`,animation:`fadeUp 0.3s ease ${i*0.05}s both` }}>
+                    <div style={{ display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:7 }}>
+                      <div style={{ display:"flex",alignItems:"center",gap:9 }}>
+                        <div style={{ padding:"2px 7px",borderRadius:3,fontSize:9,background:`${lc}15`,border:`1px solid ${lc}44`,color:lc,letterSpacing:"0.1em" }}>{level}</div>
+                        <div style={{ fontFamily:"Syne,sans-serif",fontWeight:700,color:"#e0f2fe",fontSize:12 }}>{zone.name}</div>
+                        <div style={{ fontSize:9,color:pt.color,letterSpacing:"0.08em" }}>● {pt.label}</div>
+                      </div>
+                      <div style={{ fontFamily:"Syne,sans-serif",fontWeight:700,fontSize:19,color:lc }}>{zone.severity}<span style={{ fontSize:9,color:"#4a7fa5" }}>/100</span></div>
+                    </div>
+                    <div style={{ fontSize:10,color:"#7ba8c8",marginBottom:7 }}>
+                      {pt.label} detected · Area: {zone.area} km² · Spread: {zone.trend>0?"+":""}{zone.trend} km²/day · AI Confidence: {zone.confidence}%
+                    </div>
+                    <div style={{ padding:"5px 9px",borderRadius:3,fontSize:9,background:"rgba(14,165,233,0.05)",border:"1px solid rgba(14,165,233,0.09)",color:"#4a7fa5",fontStyle:"italic" }}>
+                      🔮 {zone.type==="oil_spill"?`Spill expanding ~${zone.trend*2} km² in 24hrs, moving with ocean currents`:zone.type==="plastic_waste"?"Accumulation zone — coastal impact risk in 72hrs":zone.type==="algae_bloom"?"Bloom decreasing — favourable wind conditions":"Chemical concentration may increase — monitoring advised"}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Chatbot */}
+      <div style={{ position:"fixed",bottom:20,right:20,zIndex:200,display:"flex",flexDirection:"column",alignItems:"flex-end",gap:10 }}>
+        {chatOpen && (
+          <div style={{ width:300,height:400,background:"rgba(5,13,26,0.97)",backdropFilter:"blur(16px)",border:"1px solid rgba(14,165,233,0.2)",borderRadius:8,display:"flex",flexDirection:"column",boxShadow:"0 0 36px rgba(14,165,233,0.1)",animation:"fadeUp 0.25s ease" }}>
+            <div style={{ padding:"10px 14px",borderBottom:"1px solid rgba(14,165,233,0.1)",display:"flex",justifyContent:"space-between",alignItems:"center" }}>
+              <div>
+                <div style={{ fontFamily:"Syne,sans-serif",fontWeight:700,fontSize:11,color:"#0ea5e9" }}>OCEANAI ASSISTANT</div>
+                <div style={{ fontSize:8,color:"#2d5a7a",letterSpacing:"0.15em" }}>AI POWERED · ONLINE</div>
+              </div>
+              <button onClick={() => setChatOpen(false)} style={{ background:"none",border:"none",color:"#4a7fa5",cursor:"pointer",fontSize:13 }}>✕</button>
+            </div>
+            <div style={{ flex:1,overflowY:"auto",padding:10,display:"flex",flexDirection:"column",gap:7 }}>
+              {messages.map((m,i) => (
+                <div key={i} style={{ maxWidth:"86%",alignSelf:m.role==="user"?"flex-end":"flex-start" }}>
+                  {m.role==="ai" && <div style={{ fontSize:8,color:"#0ea5e9",marginBottom:2,letterSpacing:"0.1em" }}>OCEANAI</div>}
+                  <div style={{ padding:"7px 10px",borderRadius:m.role==="user"?"8px 8px 2px 8px":"8px 8px 8px 2px",background:m.role==="user"?"rgba(14,165,233,0.14)":"rgba(255,255,255,0.04)",border:`1px solid ${m.role==="user"?"rgba(14,165,233,0.22)":"rgba(255,255,255,0.05)"}`,fontSize:10,color:m.role==="user"?"#93c5fd":"#c8deff",lineHeight:1.6,whiteSpace:"pre-wrap" }}>{m.text}</div>
+                </div>
+              ))}
+              {typing && (
+                <div style={{ alignSelf:"flex-start" }}>
+                  <div style={{ fontSize:8,color:"#0ea5e9",marginBottom:2 }}>OCEANAI</div>
+                  <div style={{ padding:"7px 10px",borderRadius:"8px 8px 8px 2px",background:"rgba(255,255,255,0.04)",border:"1px solid rgba(255,255,255,0.05)",fontSize:10,color:"#4a7fa5" }}>
+                    <span style={{ animation:"blink 1s infinite" }}>▌</span> Analyzing...
+                  </div>
+                </div>
+              )}
+              <div ref={chatEnd}/>
+            </div>
+            <div style={{ padding:9,borderTop:"1px solid rgba(14,165,233,0.1)",display:"flex",gap:7 }}>
+              <input className="cinput" value={input} onChange={e => setInput(e.target.value)} onKeyDown={e => e.key==="Enter"&&sendChat()} placeholder="Ask about pollution..." style={{ flex:1,padding:"7px 9px",borderRadius:4,fontSize:10 }}/>
+              <button className="sbtn" onClick={sendChat} style={{ padding:"7px 11px",borderRadius:4,fontSize:10 }}>→</button>
+            </div>
+          </div>
+        )}
+        <button onClick={() => setChatOpen(o => !o)} style={{ width:46,height:46,borderRadius:"50%",background:"linear-gradient(135deg,#0369a1,#0ea5e9)",border:"2px solid rgba(14,165,233,0.4)",cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",fontSize:19,boxShadow:"0 0 20px rgba(14,165,233,0.28)",transition:"transform 0.2s",transform:chatOpen?"rotate(45deg)":"none" }}>🤖</button>
+      </div>
+    </div>
+  );
+}
