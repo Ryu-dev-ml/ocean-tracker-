@@ -1,13 +1,19 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 
+// ── Live API config ──────────────────────────────────────────────────────────
+const API_URL = process.env.REACT_APP_API_URL || "";
+const API_HEADERS = { "ngrok-skip-browser-warning": "true" };
+
 const POLLUTION_TYPES = {
   oil_spill:           { label: "Oil Spill",           color: "#ff3b3b", bg: "rgba(255,59,59,0.15)"   },
   plastic_waste:       { label: "Plastic Waste",        color: "#ff9f1c", bg: "rgba(255,159,28,0.15)"  },
   chemical_pollution:  { label: "Chemical Pollution",   color: "#c77dff", bg: "rgba(199,125,255,0.15)" },
   algae_bloom:         { label: "Algae Bloom",          color: "#06d6a0", bg: "rgba(6,214,160,0.15)"   },
+  marine_debris:       { label: "Marine Debris",        color: "#facc15", bg: "rgba(250,204,21,0.15)"  },
 };
 
-const ZONES = [
+// ── Fallback static zones (used if API is unreachable) ───────────────────────
+const ZONES_FALLBACK = [
   { id:1, name:"Arabian Sea",    lat:67, lng:32, type:"oil_spill",          severity:89, area:142, trend:+12, confidence:94 },
   { id:2, name:"Bay of Bengal",  lat:83, lng:38, type:"plastic_waste",      severity:64, area:87,  trend:+5,  confidence:88 },
   { id:3, name:"South China Sea",lat:88, lng:52, type:"chemical_pollution", severity:72, area:56,  trend:-3,  confidence:91 },
@@ -15,6 +21,24 @@ const ZONES = [
   { id:5, name:"Mediterranean",  lat:51, lng:28, type:"algae_bloom",        severity:47, area:33,  trend:-7,  confidence:85 },
   { id:6, name:"Persian Gulf",   lat:61, lng:36, type:"oil_spill",          severity:78, area:95,  trend:+9,  confidence:92 },
 ];
+
+// Convert API zone (lat/lon floats) → map position (percentage) + display fields
+function apiZoneToDisplay(z, idx) {
+  const latPct = ((z.longitude + 180) / 360) * 100;   // lon  → left %
+  const lngPct = ((90 - z.latitude)   / 180) * 100;   // lat  → top  %
+  const sevVal = Math.round((z.confidence || 0.7) * 100);
+  return {
+    id:         z.zone_id || idx + 1,
+    name:       z.class_name?.replace(/_/g," ").replace(/\b\w/g,c=>c.toUpperCase()) || "Unknown Zone",
+    lat:        Math.min(95, Math.max(5, latPct)),
+    lng:        Math.min(90, Math.max(5, lngPct)),
+    type:       POLLUTION_TYPES[z.class_name] ? z.class_name : "oil_spill",
+    severity:   sevVal,
+    area:       Math.round(sevVal * 1.6),
+    trend:      sevVal > 70 ? +Math.round(Math.random()*15+3) : -Math.round(Math.random()*8+1),
+    confidence: Math.round((z.confidence || 0.7) * 100),
+  };
+}
 
 const TIMELINE = {
   "-72h": [55,48,67,82,44,61],
@@ -77,16 +101,59 @@ export default function App() {
   const [selected, setSelected] = useState(null);
   const [chatOpen, setChatOpen] = useState(false);
   const [messages, setMessages] = useState([
-    { role:"ai", text:"👋 OceanAI online. Monitoring 6 ocean zones via Sentinel-1 + Landsat-8. Type 'help' for commands." }
+    { role:"ai", text:"👋 OceanAI online. Connecting to live satellite API...\n\nType 'help' for commands." }
   ]);
   const [input, setInput]       = useState("");
   const [typing, setTyping]     = useState(false);
   const [filters, setFilters]   = useState(new Set(Object.keys(POLLUTION_TYPES)));
   const [pulse, setPulse]       = useState(true);
-  const chatEnd = useRef(null);
+
+  // ── Live API state ──────────────────────────────────────────────────────────
+  const [liveZones,    setLiveZones]    = useState(ZONES_FALLBACK);
+  const [liveAlerts,   setLiveAlerts]   = useState([]);
+  const [liveForecast, setLiveForecast] = useState(null);
+  const [apiStatus,    setApiStatus]    = useState("connecting");
+
+  const chatEnd  = useRef(null);
   const timeKeys = Object.keys(TIMELINE);
 
-  const currentZones = ZONES.map((z, i) => ({ ...z, severity: TIMELINE[timeKey][i] }));
+  // ── Fetch all API data, refresh every 30s ──────────────────────────────────
+  useEffect(() => {
+    if (!API_URL) { setApiStatus("offline"); return; }
+    const fetchAll = async () => {
+      try {
+        const [zRes, aRes, fRes] = await Promise.all([
+          fetch(`${API_URL}/pollution-zones`, { headers: API_HEADERS }),
+          fetch(`${API_URL}/alerts`,          { headers: API_HEADERS }),
+          fetch(`${API_URL}/predict-spread`,  { headers: API_HEADERS }),
+        ]);
+        const zData = await zRes.json();
+        const aData = await aRes.json();
+        const fData = await fRes.json();
+        if (zData.zones?.length) setLiveZones(zData.zones.map(apiZoneToDisplay));
+        if (aData.alerts?.length) setLiveAlerts(aData.alerts);
+        if (fData.predictions)   setLiveForecast(fData);
+        setApiStatus("live");
+        setMessages(m =>
+          m[0]?.text?.includes("Connecting") ?
+          [{ role:"ai", text:`✅ Live API connected.\n${zData.zones?.length || 0} active pollution zones detected. Type 'help' for commands.` }]
+          : m
+        );
+      } catch {
+        setApiStatus("offline");
+      }
+    };
+    fetchAll();
+    const iv = setInterval(fetchAll, 30000);
+    return () => clearInterval(iv);
+  }, []);
+
+  // Apply time-travel scaling to live zones
+  const currentZones = liveZones.map(z => {
+    if (timeKey === "now") return z;
+    const scale = { "-72h":0.60, "-48h":0.70, "-24h":0.85, "+24h":1.08, "+48h":1.15 }[timeKey] ?? 1;
+    return { ...z, severity: Math.min(99, Math.round(z.severity * scale)) };
+  });
   const filtered     = currentZones.filter(z => filters.has(z.type));
   const avgSev       = Math.round(filtered.reduce((s,z) => s + z.severity, 0) / (filtered.length || 1));
   const critCount    = filtered.filter(z => z.severity >= 80).length;
@@ -103,9 +170,30 @@ export default function App() {
     setTyping(true);
     setTimeout(() => {
       setTyping(false);
-      setMessages(m => [...m, { role:"ai", text: getResponse(txt) }]);
+      const lm = txt.toLowerCase();
+      let reply;
+      if (lm.includes("alert")) {
+        reply = liveAlerts.length
+          ? `🔔 Live Alerts (${liveAlerts.length} active)\n\n` +
+            liveAlerts.map((a,i) => `${i+1}. ${a.level} — ${a.message}\n   Confidence: ${Math.round((a.confidence||0.7)*100)}%`).join("\n")
+          : getResponse(txt);
+      } else if (lm.includes("predict") || lm.includes("forecast")) {
+        reply = liveForecast?.predictions
+          ? `🔮 48-Hour AI Forecast\n\n` +
+            liveForecast.predictions.map(p =>
+              `+${p.hours_ahead}h:\n` + p.zones.map(z => `  • ${z.class} → ${z.spread_km2} km²`).join("\n")
+            ).join("\n\n") + `\n\nModel: ${liveForecast.model}`
+          : getResponse(txt);
+      } else if (lm.includes("zone") || lm.includes("status")) {
+        reply = `📡 Live Zones (${liveZones.length} detected)\n\n` +
+          liveZones.slice(0,5).map(z => `• ${z.name} — ${z.type.replace(/_/g," ")} (${z.severity}/100)`).join("\n") +
+          `\n\nAPI: ${apiStatus.toUpperCase()}`;
+      } else {
+        reply = getResponse(txt);
+      }
+      setMessages(m => [...m, { role:"ai", text: reply }]);
     }, 1200);
-  }, [input]);
+  }, [input, liveAlerts, liveForecast, liveZones, apiStatus]);
 
   const S = {
     app:    { minHeight:"100vh", background:"#050d1a", fontFamily:"'DM Mono','Courier New',monospace", color:"#c8deff", position:"relative", overflow:"hidden" },
@@ -171,9 +259,9 @@ export default function App() {
               ⚠ {critCount} CRITICAL
             </span>
           )}
-          <div style={{ display:"flex", alignItems:"center", gap:5, fontSize:10, color:"#06d6a0" }}>
-            <div style={{ width:6, height:6, borderRadius:"50%", background:"#06d6a0", animation:"pulse 1.5s infinite" }}/>
-            LIVE
+          <div style={{ display:"flex", alignItems:"center", gap:5, fontSize:10, color: apiStatus==="live"?"#06d6a0":apiStatus==="connecting"?"#ff9f1c":"#ff3b3b" }}>
+            <div style={{ width:6, height:6, borderRadius:"50%", background: apiStatus==="live"?"#06d6a0":apiStatus==="connecting"?"#ff9f1c":"#ff3b3b", animation:"pulse 1.5s infinite" }}/>
+            {apiStatus==="live"?"LIVE API":apiStatus==="connecting"?"CONNECTING...":"OFFLINE — MOCK DATA"}
           </div>
         </div>
       </header>
@@ -264,7 +352,7 @@ export default function App() {
             </div>
             <div style={{ marginTop:7, padding:"5px 8px", borderRadius:3, fontSize:9,
               background:"rgba(14,165,233,0.05)", border:"1px solid rgba(14,165,233,0.1)",
-              color: timeKey.startsWith("+")?"#c77dff":"#4a7fa5", letterSpacing:"0.07em" }}>
+              color: timeKey.startsWith("+")??"#c77dff":"#4a7fa5", letterSpacing:"0.07em" }}>
               {timeKey.startsWith("+")?"🔮 AI PREDICTION":timeKey==="now"?"📡 LIVE DATA":"📼 HISTORICAL"}
             </div>
           </div>
