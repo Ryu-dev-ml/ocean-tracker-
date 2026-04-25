@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from "react";
+import { MapContainer, TileLayer, CircleMarker, Popup, useMap } from "react-leaflet";
 
 // ── Live API config ──────────────────────────────────────────────────────────
 const API_URL = process.env.REACT_APP_API_URL || "";
@@ -12,26 +13,27 @@ const POLLUTION_TYPES = {
   marine_debris:       { label: "Marine Debris",        color: "#facc15", bg: "rgba(250,204,21,0.15)"  },
 };
 
-// ── Fallback static zones (used if API is unreachable) ───────────────────────
+
+// ── Fallback static zones — real ocean coordinates ───────────────────────────
 const ZONES_FALLBACK = [
-  { id:1, name:"Arabian Sea",    lat:67, lng:32, type:"oil_spill",          severity:89, area:142, trend:+12, confidence:94 },
-  { id:2, name:"Bay of Bengal",  lat:83, lng:38, type:"plastic_waste",      severity:64, area:87,  trend:+5,  confidence:88 },
-  { id:3, name:"South China Sea",lat:88, lng:52, type:"chemical_pollution", severity:72, area:56,  trend:-3,  confidence:91 },
-  { id:4, name:"Pacific Gyre",   lat:28, lng:55, type:"plastic_waste",      severity:95, area:310, trend:+18, confidence:97 },
-  { id:5, name:"Mediterranean",  lat:51, lng:28, type:"algae_bloom",        severity:47, area:33,  trend:-7,  confidence:85 },
-  { id:6, name:"Persian Gulf",   lat:61, lng:36, type:"oil_spill",          severity:78, area:95,  trend:+9,  confidence:92 },
+  { id:1, name:"Arabian Sea",     geoLat:18.5,  geoLon:65.2,   type:"oil_spill",         severity:89, area:142, trend:+12, confidence:94 },
+  { id:2, name:"Bay of Bengal",   geoLat:13.0,  geoLon:87.5,   type:"plastic_waste",      severity:64, area:87,  trend:+5,  confidence:88 },
+  { id:3, name:"South China Sea", geoLat:14.5,  geoLon:114.2,  type:"chemical_pollution", severity:72, area:56,  trend:-3,  confidence:91 },
+  { id:4, name:"Pacific Gyre",    geoLat:28.0,  geoLon:-145.0, type:"plastic_waste",      severity:95, area:310, trend:+18, confidence:97 },
+  { id:5, name:"Mediterranean",   geoLat:36.5,  geoLon:14.8,   type:"algae_bloom",        severity:47, area:33,  trend:-7,  confidence:85 },
+  { id:6, name:"Persian Gulf",    geoLat:26.0,  geoLon:52.5,   type:"oil_spill",          severity:78, area:95,  trend:+9,  confidence:92 },
 ];
 
-// Convert API zone (lat/lon floats) → map position (percentage) + display fields
+// Convert API zone → display zone with real geo coordinates
 function apiZoneToDisplay(z, idx) {
-  const latPct = ((z.longitude + 180) / 360) * 100;   // lon  → left %
-  const lngPct = ((90 - z.latitude)   / 180) * 100;   // lat  → top  %
   const sevVal = Math.round((z.confidence || 0.7) * 100);
+  const geoLat = (z.latitude  != null && Math.abs(z.latitude)  <= 90)  ? z.latitude  : (Math.random()*140-70);
+  const geoLon = (z.longitude != null && Math.abs(z.longitude) <= 180) ? z.longitude : (Math.random()*360-180);
   return {
     id:         z.zone_id || idx + 1,
-    name:       z.class_name?.replace(/_/g," ").replace(/\b\w/g,c=>c.toUpperCase()) || "Unknown Zone",
-    lat:        Math.min(95, Math.max(5, latPct)),
-    lng:        Math.min(90, Math.max(5, lngPct)),
+    name:       z.class_name ? z.class_name.replace(/_/g," ").replace(/\b\w/g,c=>c.toUpperCase()) : "Unknown Zone",
+    geoLat,
+    geoLon,
     type:       POLLUTION_TYPES[z.class_name] ? z.class_name : "oil_spill",
     severity:   sevVal,
     area:       Math.round(sevVal * 1.6),
@@ -364,84 +366,57 @@ export default function App() {
           {/* MAP TAB */}
           {tab === "map" && (
             <div style={{ position:"relative", width:"100%", height:"100%" }}>
-              <div style={{
-                position:"absolute", inset:0,
-                background:"radial-gradient(ellipse at 30% 60%,rgba(3,56,110,0.4) 0%,transparent 60%),radial-gradient(ellipse at 70% 30%,rgba(6,31,63,0.5) 0%,transparent 50%),linear-gradient(180deg,#021428 0%,#031d3b 40%,#042149 70%,#051a35 100%)",
-              }}>
-                {/* Grid lines */}
-                {[20,40,60,80].map(p => <div key={p} style={{ position:"absolute",left:0,right:0,top:`${p}%`,borderTop:"1px solid rgba(14,165,233,0.035)" }}/>)}
-                {[20,40,60,80].map(p => <div key={p} style={{ position:"absolute",top:0,bottom:0,left:`${p}%`,borderLeft:"1px solid rgba(14,165,233,0.035)" }}/>)}
-
-                {/* Stylised continents */}
-                <svg style={{ position:"absolute",inset:0,width:"100%",height:"100%",opacity:0.1 }} viewBox="0 0 100 70">
-                  <path d="M15,15 L30,12 L38,18 L35,30 L25,32 L18,28 Z" fill="#1e3a5f"/>
-                  <path d="M42,10 L65,8 L72,20 L75,35 L68,45 L55,48 L48,38 L44,25 Z" fill="#1e3a5f"/>
-                  <path d="M55,50 L65,48 L68,58 L60,62 L54,58 Z" fill="#1e3a5f"/>
-                  <path d="M6,18 L12,14 L14,22 L10,28 L5,25 Z" fill="#1e3a5f"/>
-                  <path d="M78,20 L92,18 L95,30 L88,38 L80,32 Z" fill="#1e3a5f"/>
-                </svg>
-
-                {/* Zones */}
+              <MapContainer
+                center={[20, 0]}
+                zoom={2}
+                minZoom={2}
+                maxZoom={10}
+                style={{ width:"100%", height:"100%", background:"#050d1a" }}
+                zoomControl={true}
+              >
+                <TileLayer
+                  url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
+                  attribution='&copy; <a href="https://carto.com/">CARTO</a>'
+                  subdomains="abcd"
+                />
                 {filtered.map(zone => {
-                  const pt  = POLLUTION_TYPES[zone.type];
-                  const sel = selected?.id === zone.id;
+                  const pt   = POLLUTION_TYPES[zone.type];
                   const crit = zone.severity >= 80;
+                  const r    = Math.max(8, Math.round(zone.severity * 0.28));
                   return (
-                    <div key={zone.id} onClick={() => setSelected(sel?null:zone)}
-                      style={{ position:"absolute", left:`${zone.lat}%`, top:`${zone.lng}%`, transform:"translate(-50%,-50%)", cursor:"pointer", zIndex:sel?10:5 }}>
-                      <div style={{ position:"absolute", width:zone.area*0.45+28, height:zone.area*0.45+28, borderRadius:"50%", transform:"translate(-50%,-50%)", left:"50%", top:"50%", background:`radial-gradient(circle,${pt.color}20 0%,${pt.color}08 50%,transparent 70%)`, transition:"all 0.8s" }}/>
-                      {crit && <>
-                        <div style={{ position:"absolute", width:36, height:36, borderRadius:"50%", border:`1px solid ${pt.color}`, transform:"translate(-50%,-50%)", left:"50%", top:"50%", opacity:pulse?0.5:0.1, transition:"opacity 1s", scale:pulse?"1.5":"1" }}/>
-                        <div style={{ position:"absolute", width:22, height:22, borderRadius:"50%", border:`1px solid ${pt.color}`, transform:"translate(-50%,-50%)", left:"50%", top:"50%", opacity:0.3 }}/>
-                      </>}
-                      <div style={{ position:"relative", zIndex:2, width:sel?13:9, height:sel?13:9, borderRadius:"50%", background:pt.color, border:`2px solid ${sel?"#fff":pt.color+"88"}`, boxShadow:`0 0 ${crit?12:5}px ${pt.color}`, transition:"all 0.2s" }}/>
-                      {sel && (
-                        <div style={{ position:"absolute", left:"50%", top:-34, transform:"translateX(-50%)", background:"rgba(5,13,26,0.92)", border:`1px solid ${pt.color}`, borderRadius:4, padding:"3px 8px", whiteSpace:"nowrap", fontSize:9, color:pt.color, letterSpacing:"0.08em", animation:"fadeUp 0.2s ease" }}>
-                          {zone.name.toUpperCase()} — {zone.severity}/100
+                    <CircleMarker
+                      key={zone.id}
+                      center={[zone.geoLat, zone.geoLon]}
+                      radius={r}
+                      pathOptions={{
+                        color:       pt.color,
+                        fillColor:   pt.color,
+                        fillOpacity: 0.55,
+                        weight:      crit ? 2 : 1,
+                        opacity:     0.9,
+                      }}
+                      eventHandlers={{ click: () => setSelected(s => s?.id===zone.id ? null : zone) }}
+                    >
+                      <Popup>
+                        <div style={{ background:"#050d1a", color:"#e0f2fe", padding:"6px 10px", borderRadius:4, minWidth:160, fontFamily:"DM Mono,monospace", fontSize:11 }}>
+                          <div style={{ fontWeight:700, fontSize:13, marginBottom:4, color:pt.color }}>{zone.name}</div>
+                          <div style={{ color:"#7eb8f7", marginBottom:6, fontSize:10 }}>{pt.label.toUpperCase()}</div>
+                          <div style={{ display:"flex", justifyContent:"space-between", marginBottom:2 }}><span style={{color:"#4a7fa5"}}>SEVERITY</span><span style={{color: zone.severity>=80?"#ff3b3b":"#ff9f1c"}}>{zone.severity}/100</span></div>
+                          <div style={{ display:"flex", justifyContent:"space-between", marginBottom:2 }}><span style={{color:"#4a7fa5"}}>AREA</span><span>{zone.area} km²</span></div>
+                          <div style={{ display:"flex", justifyContent:"space-between", marginBottom:2 }}><span style={{color:"#4a7fa5"}}>GROWTH</span><span style={{color:zone.trend>0?"#ff3b3b":"#06d6a0"}}>{zone.trend>0?"+":""}{zone.trend} km²/day</span></div>
+                          <div style={{ display:"flex", justifyContent:"space-between" }}><span style={{color:"#4a7fa5"}}>CONFIDENCE</span><span style={{color:"#06d6a0"}}>{zone.confidence}%</span></div>
+                          {zone.severity >= 70 && <div style={{ marginTop:6, padding:"3px 6px", background:"rgba(255,59,59,0.15)", border:"1px solid rgba(255,59,59,0.3)", borderRadius:3, color:"#ff9f9f", fontSize:9 }}>⚠ ALERT ACTIVE</div>}
                         </div>
-                      )}
-                    </div>
+                      </Popup>
+                    </CircleMarker>
                   );
                 })}
-
-                <div style={{ position:"absolute", bottom:8, left:10, fontSize:9, color:"#1e3a5f", letterSpacing:"0.08em" }}>GLOBAL OCEAN VIEW · GEE REALTIME</div>
-                <div style={{ position:"absolute", bottom:8, right:10, fontSize:9, color:"#1e3a5f" }}>{new Date().toISOString().slice(0,19)}Z</div>
-              </div>
-
-              {/* Zone detail panel */}
-              {selected && (
-                <div style={{ position:"absolute", top:14, right:14, width:230, background:"rgba(5,13,26,0.96)", backdropFilter:"blur(12px)", border:`1px solid ${POLLUTION_TYPES[selected.type].color}44`, borderRadius:6, padding:14, animation:"slideIn 0.25s ease", boxShadow:`0 0 20px ${POLLUTION_TYPES[selected.type].color}18` }}>
-                  <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:10 }}>
-                    <div>
-                      <div style={{ fontFamily:"Syne,sans-serif", fontWeight:700, fontSize:13, color:"#e0f2fe" }}>{selected.name}</div>
-                      <div style={{ fontSize:9, color:POLLUTION_TYPES[selected.type].color, marginTop:2, letterSpacing:"0.08em" }}>● {POLLUTION_TYPES[selected.type].label.toUpperCase()}</div>
-                    </div>
-                    <button onClick={() => setSelected(null)} style={{ background:"none",border:"none",color:"#4a7fa5",cursor:"pointer",fontSize:13 }}>✕</button>
-                  </div>
-                  {[
-                    ["Severity",    `${selected.severity}/100`, selected.severity>=80?"#ff3b3b":"#ff9f1c"],
-                    ["Area",        `${selected.area} km²`,     "#c8deff"],
-                    ["Growth",      `${selected.trend>0?"+":""}${selected.trend} km²/day`, selected.trend>0?"#ff3b3b":"#06d6a0"],
-                    ["Confidence",  `${selected.confidence}%`,  "#06d6a0"],
-                  ].map(([k,v,c]) => (
-                    <div key={k} style={{ display:"flex",justifyContent:"space-between",padding:"5px 0",borderBottom:"1px solid rgba(14,165,233,0.07)",fontSize:11 }}>
-                      <span style={{ color:"#4a7fa5",fontSize:9,letterSpacing:"0.1em" }}>{k.toUpperCase()}</span>
-                      <span style={{ color:c }}>{v}</span>
-                    </div>
-                  ))}
-                  <div style={{ marginTop:8 }}>
-                    <div style={{ fontSize:9, color:"#2d5a7a", marginBottom:3, letterSpacing:"0.1em" }}>SEVERITY TREND</div>
-                    <MiniChart data={Object.values(TIMELINE).map(arr => arr[selected.id-1])} color={POLLUTION_TYPES[selected.type].color}/>
-                  </div>
-                  {selected.severity >= 70 && (
-                    <div style={{ marginTop:8,padding:"5px 8px",borderRadius:3,fontSize:9,background:"rgba(255,59,59,0.08)",border:"1px solid rgba(255,59,59,0.2)",color:"#ff9f9f",letterSpacing:"0.07em" }}>
-                      ⚠ ALERT ACTIVE · ATTENTION REQUIRED
-                    </div>
-                  )}
-                </div>
-              )}
+              </MapContainer>
+              <div style={{ position:"absolute", bottom:8, left:10, fontSize:9, color:"rgba(14,165,233,0.4)", letterSpacing:"0.08em", zIndex:1000, pointerEvents:"none" }}>GLOBAL OCEAN VIEW · CARTO DARK MATTER</div>
+              <div style={{ position:"absolute", bottom:8, right:10, fontSize:9, color:"rgba(14,165,233,0.4)", zIndex:1000, pointerEvents:"none" }}>{new Date().toISOString().slice(0,19)}Z</div>
             </div>
           )}
+
 
           {/* ANALYTICS TAB */}
           {tab === "analytics" && (
