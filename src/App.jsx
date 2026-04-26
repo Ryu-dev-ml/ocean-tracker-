@@ -359,7 +359,7 @@ export default function App() {
           {tab==="map" && (
             <div style={{ position:"relative", width:"100%", height:"100%" }}>
               <MapContainer
-                center={[20, 60]}
+                center={[15, 70]}
                 zoom={3}
                 minZoom={2}
                 maxZoom={12}
