@@ -1,15 +1,15 @@
 import { useState, useEffect, useRef, useCallback } from "react";
-import { MapContainer, TileLayer, CircleMarker, Popup, ZoomControl } from "react-leaflet";
+import { MapContainer, TileLayer, CircleMarker, Popup, ZoomControl, useMap } from "react-leaflet";
 
 const API_URL = process.env.REACT_APP_API_URL || "";
 const API_HEADERS = { "ngrok-skip-browser-warning": "true" };
 
 const POLLUTION_TYPES = {
-  oil_spill:          { label: "Oil Spill",          color: "#ff3b3b", bg: "rgba(255,59,59,0.15)"   },
-  plastic_waste:      { label: "Plastic Waste",       color: "#ff9f1c", bg: "rgba(255,159,28,0.15)"  },
-  chemical_pollution: { label: "Chemical Pollution",  color: "#c77dff", bg: "rgba(199,125,255,0.15)" },
-  algae_bloom:        { label: "Algae Bloom",         color: "#06d6a0", bg: "rgba(6,214,160,0.15)"   },
-  marine_debris:      { label: "Marine Debris",       color: "#facc15", bg: "rgba(250,204,21,0.15)"  },
+  oil_spill:          { label:"Oil Spill",          color:"#ff3b3b", bg:"rgba(255,59,59,0.15)"   },
+  plastic_waste:      { label:"Plastic Waste",       color:"#ff9f1c", bg:"rgba(255,159,28,0.15)"  },
+  chemical_pollution: { label:"Chemical Pollution",  color:"#c77dff", bg:"rgba(199,125,255,0.15)" },
+  algae_bloom:        { label:"Algae Bloom",         color:"#06d6a0", bg:"rgba(6,214,160,0.15)"   },
+  marine_debris:      { label:"Marine Debris",       color:"#facc15", bg:"rgba(250,204,21,0.15)"  },
 };
 
 const ZONES_FALLBACK = [
@@ -28,46 +28,34 @@ const ZONES_FALLBACK = [
 ];
 
 function apiZoneToDisplay(z, idx) {
-  const sevVal = Math.round((z.confidence || 0.7) * 100);
+  const sevVal = z.severity || Math.round((z.confidence || 0.7) * 100);
   const geoLat = (z.latitude  != null && Math.abs(z.latitude)  <= 90)  ? z.latitude  : (Math.random()*140-70);
   const geoLon = (z.longitude != null && Math.abs(z.longitude) <= 180) ? z.longitude : (Math.random()*360-180);
   return {
-    id:         z.zone_id || idx + 1,
-    name:       z.region || (z.class_name ? z.class_name.replace(/_/g," ").replace(/\b\w/g,c=>c.toUpperCase()) : "Unknown Zone"),
-    geoLat, geoLon,
-    type:       POLLUTION_TYPES[z.class_name] ? z.class_name : "oil_spill",
-    severity:   sevVal,
-    area:       Math.round(sevVal * 1.6),
-    trend:      sevVal > 70 ? +Math.round(Math.random()*15+3) : -Math.round(Math.random()*8+1),
-    confidence: Math.round((z.confidence || 0.7) * 100),
-    source:     z.source || "API",
-    acquired:   z.acquired || null,
-    mean_vv_db: z.mean_vv_db || null,
+    id: z.zone_id || idx+1, name: z.region || (z.class_name ? z.class_name.replace(/_/g," ").replace(/\b\w/g,c=>c.toUpperCase()) : "Unknown"),
+    geoLat, geoLon, type: POLLUTION_TYPES[z.class_name] ? z.class_name : "oil_spill",
+    severity: sevVal, area: Math.round(sevVal*1.6),
+    trend: sevVal>70 ? +Math.round(Math.random()*15+3) : -Math.round(Math.random()*8+1),
+    confidence: Math.round((z.confidence||0.7)*100),
+    source: z.source||"API", acquired: z.acquired||null, mean_vv_db: z.mean_vv_db||null,
+    zone_id: z.zone_id,
   };
 }
 
 const TIMELINE = {
-  "-72h": [55,48,67,82,44,61,50,40,45,60,42,38],
-  "-48h": [60,52,69,85,46,66,54,44,48,65,46,40],
-  "-24h": [72,58,71,90,45,72,60,48,55,70,50,42],
-  "now":  [89,64,72,95,47,78,68,52,61,74,58,45],
-  "+24h": [96,70,68,99,49,83,73,56,66,80,62,48],
-  "+48h": [99,75,65,99,52,87,78,60,70,86,65,51],
-};
-
-const CHAT_RESPONSES = {
-  help: `🤖 OceanAI Commands:\n\n• "show alerts"\n• "predict / forecast"\n• "zone status"\n• "oil spill status"\n• "explain detection"\n• "show regions"`,
-  default: (q) => `Analyzing: "${q}"\n\nProcessing via YOLOv8m + Sentinel-1 SAR ensemble...\nSpecify a region, pollution type, or timeframe for detailed analysis.`,
+  "-72h":[55,48,67,82,44,61,50,40,45,60,42,38],"-48h":[60,52,69,85,46,66,54,44,48,65,46,40],
+  "-24h":[72,58,71,90,45,72,60,48,55,70,50,42],"now":[89,64,72,95,47,78,68,52,61,74,58,45],
+  "+24h":[96,70,68,99,49,83,73,56,66,80,62,48],"+48h":[99,75,65,99,52,87,78,60,70,86,65,51],
 };
 
 function getResponse(msg) {
   const m = msg.toLowerCase();
-  if (m.includes("help") || m.includes("command")) return CHAT_RESPONSES.help;
-  return CHAT_RESPONSES.default(msg);
+  if (m.includes("help")||m.includes("command")) return `🤖 OceanAI Commands:\n\n• "show alerts"\n• "predict / forecast"\n• "zone status"\n• "export data"\n• "heatmap on/off"`;
+  return `Analyzing: "${msg}"\n\nProcessing via YOLOv8m + Sentinel-1 SAR ensemble...\nSpecify a region, pollution type, or timeframe for detailed analysis.`;
 }
 
 const SeverityRing = ({ value, size=44, color }) => {
-  const r = (size-8)/2, circ = 2*Math.PI*r;
+  const r=(size-8)/2, circ=2*Math.PI*r;
   return (
     <svg width={size} height={size} style={{ transform:"rotate(-90deg)" }}>
       <circle cx={size/2} cy={size/2} r={r} fill="none" stroke="rgba(255,255,255,0.06)" strokeWidth={4}/>
@@ -80,7 +68,7 @@ const SeverityRing = ({ value, size=44, color }) => {
 
 const MiniChart = ({ data, color, height=40 }) => {
   const max=Math.max(...data), min=Math.min(...data);
-  const pts = data.map((v,i) => {
+  const pts=data.map((v,i)=>{
     const x=(i/(data.length-1))*100;
     const y=height-((v-min)/(max-min+1))*(height-8)-4;
     return `${x},${y}`;
@@ -93,45 +81,143 @@ const MiniChart = ({ data, color, height=40 }) => {
   );
 };
 
+// ── Trend line chart component ──
+const TrendChart = ({ series, color, height=60 }) => {
+  if (!series || series.length < 2) return <div style={{height,display:"flex",alignItems:"center",justifyContent:"center",fontSize:9,color:"#2d5a7a"}}>Loading...</div>;
+  const vals = series.map(s=>s.severity);
+  const max=Math.max(...vals,1), min=Math.min(...vals,0);
+  const pts=vals.map((v,i)=>{
+    const x=(i/(vals.length-1))*100;
+    const y=height-((v-min)/(max-min+1))*(height-8)-4;
+    return `${x},${y}`;
+  }).join(" ");
+  const last=vals[vals.length-1], first=vals[0];
+  const change=last-first;
+  return (
+    <div>
+      <svg width="100%" height={height} viewBox={`0 0 100 ${height}`} preserveAspectRatio="none">
+        <defs>
+          <linearGradient id={`g${color.replace("#","")}`} x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor={color} stopOpacity="0.3"/>
+            <stop offset="100%" stopColor={color} stopOpacity="0.02"/>
+          </linearGradient>
+        </defs>
+        <polyline points={`0,${height} ${pts} 100,${height}`} fill={`url(#g${color.replace("#","")})`} stroke="none"/>
+        <polyline points={pts} fill="none" stroke={color} strokeWidth="1.5" strokeLinejoin="round"/>
+        {vals.map((v,i)=>{
+          if(i!==0&&i!==vals.length-1&&i!==Math.floor(vals.length/2)) return null;
+          const x=(i/(vals.length-1))*100;
+          const y=height-((v-min)/(max-min+1))*(height-8)-4;
+          return <circle key={i} cx={x} cy={y} r="2" fill={color}/>;
+        })}
+      </svg>
+      <div style={{display:"flex",justifyContent:"space-between",fontSize:8,marginTop:3}}>
+        <span style={{color:"#2d5a7a"}}>{series[0]?.date?.slice(5)}</span>
+        <span style={{color:change>0?"#ff3b3b":"#06d6a0",fontWeight:500}}>{change>0?"▲":"▼"} {Math.abs(change).toFixed(1)}</span>
+        <span style={{color:"#2d5a7a"}}>{series[series.length-1]?.date?.slice(5)}</span>
+      </div>
+    </div>
+  );
+};
+
+// ── Heatmap layer using canvas ──
+function HeatmapLayer({ zones, visible }) {
+  const map = useMap();
+  const canvasRef = useRef(null);
+
+  useEffect(() => {
+    if (!visible || !zones.length) {
+      if (canvasRef.current) { canvasRef.current.remove(); canvasRef.current = null; }
+      return;
+    }
+
+    const canvas = document.createElement("canvas");
+    canvas.style.cssText = "position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:400;opacity:0.65;";
+    map.getContainer().appendChild(canvas);
+    canvasRef.current = canvas;
+
+    const draw = () => {
+      const size = map.getContainer().getBoundingClientRect();
+      canvas.width  = size.width;
+      canvas.height = size.height;
+      const ctx = canvas.getContext("2d");
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+      zones.forEach(zone => {
+        const pt = map.latLngToContainerPoint([zone.geoLat, zone.geoLon]);
+        const r  = Math.max(40, zone.severity * 1.2);
+        const col = POLLUTION_TYPES[zone.type]?.color || "#ff3b3b";
+
+        const hex2rgb = h => {
+          const r=parseInt(h.slice(1,3),16), g=parseInt(h.slice(3,5),16), b=parseInt(h.slice(5,7),16);
+          return `${r},${g},${b}`;
+        };
+
+        const grad = ctx.createRadialGradient(pt.x, pt.y, 0, pt.x, pt.y, r);
+        grad.addColorStop(0,   `rgba(${hex2rgb(col)},0.7)`);
+        grad.addColorStop(0.4, `rgba(${hex2rgb(col)},0.35)`);
+        grad.addColorStop(0.7, `rgba(${hex2rgb(col)},0.12)`);
+        grad.addColorStop(1,   `rgba(${hex2rgb(col)},0)`);
+
+        ctx.beginPath();
+        ctx.arc(pt.x, pt.y, r, 0, Math.PI*2);
+        ctx.fillStyle = grad;
+        ctx.fill();
+      });
+    };
+
+    draw();
+    map.on("zoom move zoomend moveend", draw);
+    return () => {
+      map.off("zoom move zoomend moveend", draw);
+      if (canvasRef.current) { canvasRef.current.remove(); canvasRef.current = null; }
+    };
+  }, [map, zones, visible]);
+
+  return null;
+}
+
 export default function App() {
-  const [tab, setTab]             = useState("map");
-  const [timeKey, setTimeKey]     = useState("now");
-  const [selected, setSelected]   = useState(null);
-  const [chatOpen, setChatOpen]   = useState(false);
-  const [messages, setMessages]   = useState([{ role:"ai", text:"👋 OceanAI online. Connecting to Sentinel-1 satellite API...\n\nType 'help' for commands." }]);
-  const [input, setInput]         = useState("");
-  const [typing, setTyping]       = useState(false);
-  const [filters, setFilters]     = useState(new Set(Object.keys(POLLUTION_TYPES)));
-  const [pulse, setPulse]         = useState(true);
-  const [liveZones, setLiveZones]         = useState(ZONES_FALLBACK);
-  const [liveAlerts, setLiveAlerts]       = useState([]);
-  const [liveForecast, setLiveForecast]   = useState(null);
-  const [apiStatus, setApiStatus]         = useState("connecting");
-  const [lastUpdated, setLastUpdated]     = useState(null);
-  const chatEnd = useRef(null);
+  const [tab, setTab]           = useState("map");
+  const [timeKey, setTimeKey]   = useState("now");
+  const [selected, setSelected] = useState(null);
+  const [chatOpen, setChatOpen] = useState(false);
+  const [messages, setMessages] = useState([{ role:"ai", text:"👋 OceanAI online. Connecting to Sentinel-1 satellite API...\n\nType 'help' for commands." }]);
+  const [input, setInput]       = useState("");
+  const [typing, setTyping]     = useState(false);
+  const [filters, setFilters]   = useState(new Set(Object.keys(POLLUTION_TYPES)));
+  const [pulse, setPulse]       = useState(true);
+  const [heatmapOn, setHeatmapOn]       = useState(false);
+  const [liveZones, setLiveZones]       = useState(ZONES_FALLBACK);
+  const [liveAlerts, setLiveAlerts]     = useState([]);
+  const [liveForecast, setLiveForecast] = useState(null);
+  const [apiStatus, setApiStatus]       = useState("connecting");
+  const [lastUpdated, setLastUpdated]   = useState(null);
+  const [trends, setTrends]             = useState([]);
+  const [trendDays, setTrendDays]       = useState(7);
+  const [thumbnails, setThumbnails]     = useState({});
+  const [thumbLoading, setThumbLoading] = useState({});
+  const chatEnd  = useRef(null);
   const timeKeys = Object.keys(TIMELINE);
 
+  // ── Fetch core data ──
   useEffect(() => {
     if (!API_URL) { setApiStatus("offline"); return; }
     const fetchAll = async () => {
       try {
         const [zRes, aRes, fRes] = await Promise.all([
-          fetch(`${API_URL}/pollution-zones`, { headers: API_HEADERS }),
-          fetch(`${API_URL}/alerts`,          { headers: API_HEADERS }),
-          fetch(`${API_URL}/predict-spread`,  { headers: API_HEADERS }),
+          fetch(`${API_URL}/pollution-zones`, { headers:API_HEADERS }),
+          fetch(`${API_URL}/alerts`,          { headers:API_HEADERS }),
+          fetch(`${API_URL}/predict-spread`,  { headers:API_HEADERS }),
         ]);
-        const zData = await zRes.json();
-        const aData = await aRes.json();
-        const fData = await fRes.json();
+        const zData=await zRes.json(), aData=await aRes.json(), fData=await fRes.json();
         if (zData.zones?.length) setLiveZones(zData.zones.map(apiZoneToDisplay));
         if (aData.alerts?.length) setLiveAlerts(aData.alerts);
         if (fData.predictions) setLiveForecast(fData);
         setApiStatus("live");
         setLastUpdated(new Date());
-        setMessages(m =>
-          m[0]?.text?.includes("Connecting") ?
-          [{ role:"ai", text:`✅ Sentinel-1 SAR feed connected.\n${zData.zones?.length||0} active pollution zones detected across major ocean regions.\n\nType 'help' for commands.` }] : m
-        );
+        setMessages(m => m[0]?.text?.includes("Connecting")
+          ? [{ role:"ai", text:`✅ Sentinel-1 SAR feed connected.\n${zData.zones?.length||0} active zones detected.\n\nType 'help' for commands.` }] : m);
       } catch { setApiStatus("offline"); }
     };
     fetchAll();
@@ -139,55 +225,95 @@ export default function App() {
     return () => clearInterval(iv);
   }, []);
 
-  const currentZones = liveZones.map(z => {
-    if (timeKey === "now") return z;
-    const scale = { "-72h":0.60, "-48h":0.70, "-24h":0.85, "+24h":1.08, "+48h":1.15 }[timeKey] ?? 1;
-    return { ...z, severity: Math.min(99, Math.round(z.severity * scale)) };
-  });
-  const filtered   = currentZones.filter(z => filters.has(z.type));
-  const avgSev     = Math.round(filtered.reduce((s,z)=>s+z.severity,0)/(filtered.length||1));
-  const critCount  = filtered.filter(z=>z.severity>=80).length;
-  const totalArea  = filtered.reduce((s,z)=>s+z.area,0);
-  const satZones   = liveZones.filter(z=>z.source==="Sentinel-1 SAR").length;
+  // ── Fetch trends ──
+  useEffect(() => {
+    if (!API_URL) return;
+    fetch(`${API_URL}/trends?days=${trendDays}`, { headers:API_HEADERS })
+      .then(r=>r.json()).then(d=>{ if(d.trends) setTrends(d.trends); }).catch(()=>{});
+  }, [trendDays, apiStatus]);
 
-  useEffect(() => { chatEnd.current?.scrollIntoView({ behavior:"smooth" }); }, [messages, typing]);
-  useEffect(() => { const iv=setInterval(()=>setPulse(p=>!p),2000); return ()=>clearInterval(iv); }, []);
+  const fetchThumbnail = useCallback(async (zone) => {
+    if (!zone?.zone_id || !API_URL || thumbnails[zone.zone_id] || thumbLoading[zone.zone_id]) return;
+    setThumbLoading(t=>({...t,[zone.zone_id]:true}));
+    try {
+      const r = await fetch(`${API_URL}/thumbnail/${zone.zone_id}`, { headers:API_HEADERS });
+      const d = await r.json();
+      if (d.url) setThumbnails(t=>({...t,[zone.zone_id]:d.url}));
+    } catch {}
+    setThumbLoading(t=>({...t,[zone.zone_id]:false}));
+  }, [thumbnails, thumbLoading]);
+
+  const exportCSV = useCallback(() => {
+    if (!API_URL) return;
+    const link = document.createElement("a");
+    link.href = `${API_URL}/export/csv`;
+    link.download = "oceanai_zones.csv";
+    link.target = "_blank";
+    link.click();
+  }, []);
+
+  const exportJSON = useCallback(() => {
+    const data = JSON.stringify(liveZones.map(z=>({
+      name:z.name, type:z.type, severity:z.severity,
+      lat:z.geoLat, lon:z.geoLon, confidence:z.confidence,
+      source:z.source, acquired:z.acquired
+    })), null, 2);
+    const blob = new Blob([data], {type:"application/json"});
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement("a");
+    a.href=url; a.download="oceanai_zones.json"; a.click();
+    URL.revokeObjectURL(url);
+  }, [liveZones]);
+
+  const currentZones = liveZones.map(z => {
+    if (timeKey==="now") return z;
+    const scale={"-72h":0.60,"-48h":0.70,"-24h":0.85,"+24h":1.08,"+48h":1.15}[timeKey]??1;
+    return {...z, severity:Math.min(99,Math.round(z.severity*scale))};
+  });
+  const filtered  = currentZones.filter(z=>filters.has(z.type));
+  const avgSev    = Math.round(filtered.reduce((s,z)=>s+z.severity,0)/(filtered.length||1));
+  const critCount = filtered.filter(z=>z.severity>=80).length;
+  const totalArea = filtered.reduce((s,z)=>s+z.area,0);
+  const satZones  = liveZones.filter(z=>z.source==="Sentinel-1 SAR").length;
+
+  useEffect(()=>{ chatEnd.current?.scrollIntoView({behavior:"smooth"}); },[messages,typing]);
+  useEffect(()=>{ const iv=setInterval(()=>setPulse(p=>!p),2000); return ()=>clearInterval(iv); },[]);
 
   const sendChat = useCallback(() => {
     if (!input.trim()) return;
-    const txt = input.trim();
+    const txt=input.trim();
     setMessages(m=>[...m,{role:"user",text:txt}]);
-    setInput("");
-    setTyping(true);
-    setTimeout(() => {
+    setInput(""); setTyping(true);
+    setTimeout(()=>{
       setTyping(false);
-      const lm = txt.toLowerCase();
+      const lm=txt.toLowerCase();
       let reply;
       if (lm.includes("alert")) {
         reply = liveAlerts.length
-          ? `🔔 Live Alerts (${liveAlerts.length} active)\n\n` + liveAlerts.map((a,i)=>`${i+1}. ${a.level} — ${a.message}\n   Conf: ${Math.round((a.confidence||0.7)*100)}%`).join("\n")
-          : `No live alerts yet. API status: ${apiStatus.toUpperCase()}`;
+          ? `🔔 Live Alerts (${liveAlerts.length} active)\n\n`+liveAlerts.map((a,i)=>`${i+1}. ${a.level} — ${a.message}`).join("\n")
+          : "No live alerts. API: "+apiStatus.toUpperCase();
       } else if (lm.includes("predict")||lm.includes("forecast")) {
         reply = liveForecast?.predictions
-          ? `🔮 48-Hour Forecast\n\n` + liveForecast.predictions.map(p=>`+${p.hours_ahead}h:\n`+p.zones.map(z=>`  • ${z.class} → ${z.spread_km2} km²`).join("\n")).join("\n\n")
+          ? `🔮 48h Forecast\n\n`+liveForecast.predictions.map(p=>`+${p.hours_ahead}h:\n`+p.zones.map(z=>`  • ${z.class} → ${z.spread_km2} km²`).join("\n")).join("\n\n")
           : getResponse(txt);
-      } else if (lm.includes("zone")||lm.includes("status")||lm.includes("region")) {
-        reply = `📡 Active Zones (${liveZones.length} total, ${satZones} from Sentinel-1)\n\n`
-          + liveZones.slice(0,8).map(z=>`• ${z.name} — ${z.type.replace(/_/g," ")} (${z.severity}/100) [${z.source||"API"}]`).join("\n")
-          + (liveZones.length>8?`\n...and ${liveZones.length-8} more`:"");
+      } else if (lm.includes("export")) {
+        exportCSV(); reply = "📥 CSV export started — check your downloads.";
+      } else if (lm.includes("heatmap")) {
+        setHeatmapOn(h=>!h); reply = `🌡️ Heatmap ${heatmapOn?"disabled":"enabled"}.`;
+      } else if (lm.includes("zone")||lm.includes("status")) {
+        reply = `📡 ${liveZones.length} zones active (${satZones} from Sentinel-1)\n\n`
+          +liveZones.slice(0,6).map(z=>`• ${z.name} — ${z.type.replace(/_/g," ")} (${z.severity}/100)`).join("\n");
       } else {
         reply = getResponse(txt);
       }
       setMessages(m=>[...m,{role:"ai",text:reply}]);
     }, 1200);
-  }, [input, liveAlerts, liveForecast, liveZones, apiStatus, satZones]);
+  }, [input, liveAlerts, liveForecast, liveZones, apiStatus, satZones, heatmapOn, exportCSV]);
 
   const S = {
     app:     { minHeight:"100vh", background:"#050d1a", fontFamily:"'DM Mono','Courier New',monospace", color:"#c8deff", position:"relative", overflow:"hidden" },
     header:  { position:"sticky", top:0, zIndex:100, background:"rgba(5,13,26,0.95)", backdropFilter:"blur(12px)", borderBottom:"1px solid rgba(14,165,233,0.15)", padding:"0 20px", display:"flex", alignItems:"center", justifyContent:"space-between", height:54 },
-    logo:    { fontFamily:"Syne,sans-serif", fontWeight:800, fontSize:16, letterSpacing:"0.08em", color:"#e0f2fe" },
-    nav:     { display:"flex", gap:2 },
-    tabBtn:  (a) => ({ background:"none", border:"none", cursor:"pointer", fontFamily:"inherit", padding:"6px 12px", fontSize:10, letterSpacing:"0.12em", color:a?"#0ea5e9":"#4a7fa5", borderBottom:a?"2px solid #0ea5e9":"2px solid transparent" }),
+    tabBtn:  (a)=>({ background:"none", border:"none", cursor:"pointer", fontFamily:"inherit", padding:"6px 12px", fontSize:10, letterSpacing:"0.12em", color:a?"#0ea5e9":"#4a7fa5", borderBottom:a?"2px solid #0ea5e9":"2px solid transparent" }),
     statsBar:{ display:"flex", gap:1, background:"rgba(14,165,233,0.03)", borderBottom:"1px solid rgba(14,165,233,0.08)" },
     statCell:{ flex:1, padding:"8px 14px", borderRight:"1px solid rgba(14,165,233,0.06)" },
     main:    { display:"flex", height:"calc(100vh - 106px)" },
@@ -201,8 +327,7 @@ export default function App() {
         *{box-sizing:border-box;margin:0;padding:0}
         ::-webkit-scrollbar{width:3px;background:#0a1628}
         ::-webkit-scrollbar-thumb{background:#1e3a5f;border-radius:2px}
-        .zcard{transition:transform 0.2s;cursor:pointer}
-        .zcard:hover{transform:translateX(3px)}
+        .zcard{transition:transform 0.2s;cursor:pointer}.zcard:hover{transform:translateX(3px)}
         .tbtn{cursor:pointer;transition:all 0.2s;background:none;border:none;font-family:inherit}
         .cinput{background:#0a1628;border:1px solid #1e3a5f;color:#c8deff;font-family:inherit;outline:none;transition:border 0.2s}
         .cinput:focus{border-color:#0ea5e9}
@@ -215,80 +340,73 @@ export default function App() {
         @keyframes pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:0.4;transform:scale(1.6)}}
         @keyframes blink{0%,100%{opacity:1}50%{opacity:0}}
         @keyframes fadeUp{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
-        @keyframes slideIn{from{opacity:0;transform:translateX(12px)}to{opacity:1;transform:none}}
         @keyframes scanline{0%{top:-2px}100%{top:100%}}
         .scanline{position:fixed;left:0;right:0;height:1px;background:linear-gradient(transparent,rgba(14,165,233,0.06),transparent);animation:scanline 5s linear infinite;pointer-events:none;z-index:0}
         .grid-bg{position:fixed;inset:0;background-image:linear-gradient(rgba(14,165,233,0.025) 1px,transparent 1px),linear-gradient(90deg,rgba(14,165,233,0.025) 1px,transparent 1px);background-size:40px 40px;pointer-events:none;z-index:0}
         @media(max-width:700px){.sidebar-hide{display:none!important}.viewport-full{flex:1!important}}
       `}</style>
-
-      <div className="grid-bg"/>
-      <div className="scanline"/>
+      <div className="grid-bg"/><div className="scanline"/>
 
       {/* Header */}
       <header style={S.header}>
-        <div style={{ display:"flex", alignItems:"center", gap:10, position:"relative", zIndex:1 }}>
+        <div style={{ display:"flex", alignItems:"center", gap:10, zIndex:1 }}>
           <div style={{ position:"relative", width:30, height:30 }}>
             <div style={{ position:"absolute", inset:0, borderRadius:"50%", border:"2px solid #0ea5e9", opacity:0.3 }}/>
             <div style={{ position:"absolute", inset:4, borderRadius:"50%", background:"radial-gradient(circle,#0ea5e9,#0369a1)" }}/>
             <div style={{ position:"absolute", top:"50%", left:"50%", transform:"translate(-50%,-50%)", width:5, height:5, borderRadius:"50%", background:"#fff", animation:"pulse 2s infinite" }}/>
           </div>
           <div>
-            <div style={S.logo}>OCEAN<span style={{ color:"#0ea5e9" }}>AI</span></div>
-            <div style={{ fontSize:9, color:"#2d5a7a", letterSpacing:"0.2em" }}>POLLUTION TRACKING v2.0</div>
+            <div style={{ fontFamily:"Syne,sans-serif", fontWeight:800, fontSize:16, letterSpacing:"0.08em", color:"#e0f2fe" }}>OCEAN<span style={{color:"#0ea5e9"}}>AI</span></div>
+            <div style={{ fontSize:9, color:"#2d5a7a", letterSpacing:"0.2em" }}>POLLUTION TRACKING v3.0</div>
           </div>
         </div>
-        <nav style={S.nav}>
-          {[["map","MAP"],["analytics","ANALYTICS"],["detection","AI ENGINE"],["alerts","ALERTS"]].map(([k,l]) => (
+        <nav style={{ display:"flex", gap:2 }}>
+          {[["map","MAP"],["analytics","ANALYTICS"],["detection","AI ENGINE"],["alerts","ALERTS"]].map(([k,l])=>(
             <button key={k} style={S.tabBtn(tab===k)} onClick={()=>setTab(k)}>{l}</button>
           ))}
         </nav>
-        <div style={{ display:"flex", alignItems:"center", gap:12, position:"relative", zIndex:1 }}>
-          {critCount>0 && (
-            <span style={{ background:"rgba(255,59,59,0.15)", color:"#ff3b3b", border:"1px solid rgba(255,59,59,0.3)", borderRadius:3, padding:"2px 8px", fontSize:9, letterSpacing:"0.1em" }}>
-              ⚠ {critCount} CRITICAL
-            </span>
-          )}
+        <div style={{ display:"flex", alignItems:"center", gap:10, zIndex:1 }}>
+          {/* Export buttons */}
+          <button onClick={exportCSV} title="Export CSV" style={{ background:"rgba(6,214,160,0.1)", border:"1px solid rgba(6,214,160,0.3)", color:"#06d6a0", borderRadius:3, padding:"3px 8px", fontSize:9, cursor:"pointer", fontFamily:"inherit", letterSpacing:"0.08em" }}>↓ CSV</button>
+          <button onClick={exportJSON} title="Export JSON" style={{ background:"rgba(199,125,255,0.1)", border:"1px solid rgba(199,125,255,0.3)", color:"#c77dff", borderRadius:3, padding:"3px 8px", fontSize:9, cursor:"pointer", fontFamily:"inherit", letterSpacing:"0.08em" }}>↓ JSON</button>
+          {critCount>0 && <span style={{ background:"rgba(255,59,59,0.15)", color:"#ff3b3b", border:"1px solid rgba(255,59,59,0.3)", borderRadius:3, padding:"2px 8px", fontSize:9 }}>⚠ {critCount} CRITICAL</span>}
           <div style={{ display:"flex", alignItems:"center", gap:5, fontSize:10, color:apiStatus==="live"?"#06d6a0":apiStatus==="connecting"?"#ff9f1c":"#ff3b3b" }}>
             <div style={{ width:6, height:6, borderRadius:"50%", background:apiStatus==="live"?"#06d6a0":apiStatus==="connecting"?"#ff9f1c":"#ff3b3b", animation:"pulse 1.5s infinite" }}/>
-            {apiStatus==="live"?"● LIVE API":apiStatus==="connecting"?"CONNECTING...":"OFFLINE — MOCK DATA"}
+            {apiStatus==="live"?"● LIVE API":apiStatus==="connecting"?"CONNECTING...":"OFFLINE"}
           </div>
         </div>
       </header>
 
       {/* Stats bar */}
-      <div style={{ ...S.statsBar, position:"relative", zIndex:1 }}>
+      <div style={{...S.statsBar, position:"relative", zIndex:1}}>
         {[
-          ["ZONES",       filtered.length,                 "",    "#0ea5e9"],
-          ["AVG SEVERITY",avgSev,                          "/100",avgSev>75?"#ff3b3b":avgSev>50?"#ff9f1c":"#06d6a0"],
-          ["TOTAL AREA",  totalArea,                       " km²","#c77dff"],
-          ["CRITICAL",    critCount,                       "",    "#ff3b3b"],
-          ["SAT ZONES",   satZones,                        "",    "#06d6a0"],
-          ["SATELLITES",  "S1+L8",                         "",    "#ff9f1c"],
-        ].map(([label,val,unit,color],i) => (
+          ["ZONES",      filtered.length,  "",     "#0ea5e9"],
+          ["AVG SEV",    avgSev,            "/100", avgSev>75?"#ff3b3b":avgSev>50?"#ff9f1c":"#06d6a0"],
+          ["TOTAL AREA", totalArea,         " km²", "#c77dff"],
+          ["CRITICAL",   critCount,         "",     "#ff3b3b"],
+          ["SAT ZONES",  satZones,          "",     "#06d6a0"],
+          ["SATELLITES", "S1+L8",           "",     "#ff9f1c"],
+        ].map(([label,val,unit,color],i)=>(
           <div key={i} style={S.statCell}>
             <div style={{ fontSize:8, color:"#2d5a7a", letterSpacing:"0.15em", marginBottom:2 }}>{label}</div>
-            <div style={{ fontSize:15, fontFamily:"Syne,sans-serif", fontWeight:700, color }}>
-              {val}<span style={{ fontSize:9, color:"#4a7fa5" }}>{unit}</span>
-            </div>
+            <div style={{ fontSize:15, fontFamily:"Syne,sans-serif", fontWeight:700, color }}>{val}<span style={{fontSize:9,color:"#4a7fa5"}}>{unit}</span></div>
           </div>
         ))}
       </div>
 
       {/* Main */}
-      <div style={{ ...S.main, position:"relative", zIndex:1 }}>
+      <div style={{...S.main, position:"relative", zIndex:1}}>
 
         {/* Sidebar */}
         <div className="sidebar-hide" style={S.sidebar}>
           <div style={{ padding:"12px 14px", borderBottom:"1px solid rgba(14,165,233,0.08)" }}>
             <div style={{ fontSize:9, color:"#2d5a7a", letterSpacing:"0.2em", marginBottom:8 }}>FILTER</div>
             <div style={{ display:"flex", flexWrap:"wrap", gap:5 }}>
-              {Object.entries(POLLUTION_TYPES).map(([key,val]) => (
+              {Object.entries(POLLUTION_TYPES).map(([key,val])=>(
                 <div key={key} onClick={()=>setFilters(f=>{const n=new Set(f);n.has(key)?n.delete(key):n.add(key);return n;})}
-                  style={{ padding:"3px 8px", borderRadius:3, fontSize:9, cursor:"pointer", letterSpacing:"0.08em", transition:"all 0.2s",
+                  style={{ padding:"3px 8px", borderRadius:3, fontSize:9, cursor:"pointer", transition:"all 0.2s",
                     border:`1px solid ${filters.has(key)?val.color:"rgba(255,255,255,0.08)"}`,
-                    background:filters.has(key)?val.bg:"transparent",
-                    color:filters.has(key)?val.color:"#2d5a7a" }}>
+                    background:filters.has(key)?val.bg:"transparent", color:filters.has(key)?val.color:"#2d5a7a" }}>
                   ● {val.label.toUpperCase().split(" ")[0]}
                 </div>
               ))}
@@ -297,7 +415,7 @@ export default function App() {
 
           <div style={{ flex:1, overflowY:"auto", padding:"6px 0" }}>
             <div style={{ padding:"4px 14px 6px", fontSize:9, color:"#2d5a7a", letterSpacing:"0.2em" }}>ACTIVE ZONES ({filtered.length})</div>
-            {filtered.sort((a,b)=>b.severity-a.severity).map(zone => {
+            {filtered.sort((a,b)=>b.severity-a.severity).map(zone=>{
               const pt=POLLUTION_TYPES[zone.type], sel=selected?.id===zone.id;
               return (
                 <div key={zone.id} className="zcard" onClick={()=>setSelected(sel?null:zone)}
@@ -307,10 +425,8 @@ export default function App() {
                   <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start" }}>
                     <div style={{ flex:1, marginRight:6 }}>
                       <div style={{ fontSize:11, color:"#c8deff", marginBottom:2 }}>{zone.name}</div>
-                      <div style={{ fontSize:9, color:pt.color, letterSpacing:"0.08em" }}>● {pt.label.toUpperCase()}</div>
-                      {zone.source==="Sentinel-1 SAR" && (
-                        <div style={{ fontSize:8, color:"#0ea5e9", marginTop:2, letterSpacing:"0.06em" }}>🛰 S1-SAR</div>
-                      )}
+                      <div style={{ fontSize:9, color:pt.color }}>● {pt.label.toUpperCase()}</div>
+                      {zone.source==="Sentinel-1 SAR" && <div style={{ fontSize:8, color:"#0ea5e9", marginTop:2 }}>🛰 S1-SAR</div>}
                     </div>
                     <div style={{ position:"relative", width:44, height:44, flexShrink:0 }}>
                       <SeverityRing value={zone.severity} size={44} color={zone.severity>=80?"#ff3b3b":zone.severity>=60?"#ff9f1c":"#06d6a0"}/>
@@ -329,82 +445,77 @@ export default function App() {
           <div style={{ padding:"10px 14px", borderTop:"1px solid rgba(14,165,233,0.1)" }}>
             <div style={{ fontSize:9, color:"#2d5a7a", letterSpacing:"0.2em", marginBottom:7 }}>⏳ TIME TRAVEL</div>
             <div style={{ display:"flex", gap:2 }}>
-              {timeKeys.map(k => (
+              {timeKeys.map(k=>(
                 <button key={k} className="tbtn" onClick={()=>setTimeKey(k)} style={{
                   flex:1, padding:"5px 2px", borderRadius:3, fontSize:8,
                   border:`1px solid ${timeKey===k?"#0ea5e9":"rgba(14,165,233,0.12)"}`,
                   background:timeKey===k?"rgba(14,165,233,0.15)":"transparent",
-                  color:timeKey===k?"#0ea5e9":"#2d5a7a",
-                  fontStyle:k.startsWith("+")?"italic":"normal",
+                  color:timeKey===k?"#0ea5e9":"#2d5a7a", fontStyle:k.startsWith("+")?"italic":"normal",
                 }}>{k}</button>
               ))}
             </div>
             <div style={{ marginTop:7, padding:"5px 8px", borderRadius:3, fontSize:9,
               background:"rgba(14,165,233,0.05)", border:"1px solid rgba(14,165,233,0.1)",
-              color:timeKey.startsWith("+")?"#c77dff":"#4a7fa5", letterSpacing:"0.07em" }}>
+              color:timeKey.startsWith("+")?"#c77dff":"#4a7fa5" }}>
               {timeKey.startsWith("+")?"🔮 AI PREDICTION":timeKey==="now"?"📡 LIVE DATA":"📼 HISTORICAL"}
             </div>
-            {lastUpdated && (
-              <div style={{ marginTop:5, fontSize:8, color:"#2d5a7a", letterSpacing:"0.06em" }}>
-                UPDATED {lastUpdated.toTimeString().slice(0,8)}
-              </div>
-            )}
+            {lastUpdated && <div style={{ marginTop:5, fontSize:8, color:"#2d5a7a" }}>UPDATED {lastUpdated.toTimeString().slice(0,8)}</div>}
           </div>
         </div>
 
         {/* Viewport */}
         <div className="viewport-full" style={S.viewport}>
 
-          {/* MAP TAB */}
+          {/* ── MAP TAB ── */}
           {tab==="map" && (
             <div style={{ position:"relative", width:"100%", height:"100%" }}>
-              <MapContainer
-                center={[15, 70]}
-                zoom={3}
-                minZoom={2}
-                maxZoom={12}
-                style={{ width:"100%", height:"100%", background:"#050d1a" }}
-                zoomControl={false}
-              >
+              <MapContainer center={[20,60]} zoom={3} minZoom={2} maxZoom={12}
+                style={{ width:"100%", height:"100%", background:"#050d1a" }} zoomControl={false}>
                 <ZoomControl position="topleft"/>
-                <TileLayer
-                  url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
-                  attribution='&copy; <a href="https://carto.com/">CARTO</a>'
-                  subdomains="abcd"
-                  maxZoom={20}
-                />
-                {filtered.map(zone => {
-                  const pt   = POLLUTION_TYPES[zone.type];
-                  const crit = zone.severity >= 80;
-                  const r    = Math.max(7, Math.round(zone.severity * 0.25));
-                  const isSat = zone.source === "Sentinel-1 SAR";
+                <TileLayer url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
+                  attribution='&copy; <a href="https://carto.com/">CARTO</a>' subdomains="abcd" maxZoom={20}/>
+                <HeatmapLayer zones={filtered} visible={heatmapOn}/>
+                {filtered.map(zone=>{
+                  const pt=POLLUTION_TYPES[zone.type], crit=zone.severity>=80;
+                  const r=Math.max(7,Math.round(zone.severity*0.25));
+                  const isSat=zone.source==="Sentinel-1 SAR";
                   return (
-                    <CircleMarker
-                      key={zone.id}
-                      center={[zone.geoLat, zone.geoLon]}
-                      radius={r}
-                      pathOptions={{
-                        color:       crit ? pt.color : pt.color+"bb",
-                        fillColor:   pt.color,
-                        fillOpacity: isSat ? 0.7 : 0.45,
-                        weight:      crit ? 2.5 : 1.5,
-                        opacity:     1,
-                        dashArray:   isSat ? null : "4 2",
-                      }}
-                      eventHandlers={{ click:()=>setSelected(s=>s?.id===zone.id?null:zone) }}
-                    >
-                      <Popup maxWidth={220}>
-                        <div style={{ background:"#050d1a", color:"#e0f2fe", padding:"10px 12px", borderRadius:4, minWidth:190, fontFamily:"DM Mono,monospace", fontSize:11 }}>
+                    <CircleMarker key={zone.id} center={[zone.geoLat,zone.geoLon]} radius={r}
+                      pathOptions={{ color:crit?pt.color:pt.color+"bb", fillColor:pt.color,
+                        fillOpacity:isSat?0.7:0.45, weight:crit?2.5:1.5, opacity:1,
+                        dashArray:isSat?null:"4 2" }}
+                      eventHandlers={{ click:()=>{ setSelected(s=>s?.id===zone.id?null:zone); fetchThumbnail(zone); }}}>
+                      <Popup maxWidth={240} onOpen={()=>fetchThumbnail(zone)}>
+                        <div style={{ background:"#050d1a", color:"#e0f2fe", padding:"10px 12px", borderRadius:4, minWidth:200, fontFamily:"DM Mono,monospace", fontSize:11 }}>
                           <div style={{ fontWeight:700, fontSize:13, marginBottom:2, color:pt.color }}>{zone.name}</div>
-                          <div style={{ color:"#7eb8f7", marginBottom:2, fontSize:9, letterSpacing:"0.08em" }}>{pt.label.toUpperCase()}</div>
-                          {isSat && <div style={{ color:"#0ea5e9", fontSize:9, marginBottom:8, letterSpacing:"0.06em" }}>🛰 Sentinel-1 SAR · Live</div>}
-                          {!isSat && <div style={{ color:"#4a7fa5", fontSize:9, marginBottom:8 }}>📦 Fallback data</div>}
+                          <div style={{ color:"#7eb8f7", marginBottom:2, fontSize:9 }}>{pt.label.toUpperCase()}</div>
+                          {isSat && <div style={{ color:"#0ea5e9", fontSize:9, marginBottom:8 }}>🛰 Sentinel-1 SAR · Live</div>}
+                          {/* SAR Thumbnail */}
+                          {isSat && (
+                            <div style={{ marginBottom:8, borderRadius:3, overflow:"hidden", height:90, background:"#0a1628", border:"1px solid rgba(14,165,233,0.2)", position:"relative" }}>
+                              {thumbLoading[zone.zone_id] && (
+                                <div style={{ position:"absolute", inset:0, display:"flex", alignItems:"center", justifyContent:"center", fontSize:8, color:"#2d5a7a" }}>Loading SAR image...</div>
+                              )}
+                              {thumbnails[zone.zone_id] ? (
+                                <img src={thumbnails[zone.zone_id]} alt="SAR" style={{ width:"100%", height:"100%", objectFit:"cover", filter:"hue-rotate(180deg) saturate(1.5)" }}
+                                  onError={e=>e.target.style.display="none"}/>
+                              ) : !thumbLoading[zone.zone_id] && (
+                                <div style={{ position:"absolute", inset:0, display:"flex", alignItems:"center", justifyContent:"center", flexDirection:"column", gap:4 }}>
+                                  <div style={{ fontSize:18 }}>🛰</div>
+                                  <div style={{ fontSize:8, color:"#2d5a7a" }}>SAR image unavailable</div>
+                                </div>
+                              )}
+                              <div style={{ position:"absolute", bottom:3, left:4, fontSize:7, color:"rgba(14,165,233,0.6)", background:"rgba(5,13,26,0.8)", padding:"1px 4px", borderRadius:2 }}>
+                                Sentinel-1 SAR · VV Band
+                              </div>
+                            </div>
+                          )}
                           {[
                             ["SEVERITY",   `${zone.severity}/100`,  zone.severity>=80?"#ff3b3b":"#ff9f1c"],
                             ["AREA",       `${zone.area} km²`,       "#c8deff"],
                             ["GROWTH",     `${zone.trend>0?"+":""}${zone.trend} km²/day`, zone.trend>0?"#ff3b3b":"#06d6a0"],
                             ["CONFIDENCE", `${zone.confidence}%`,    "#06d6a0"],
-                          ].map(([k,v,c]) => (
+                          ].map(([k,v,c])=>(
                             <div key={k} style={{ display:"flex", justifyContent:"space-between", padding:"3px 0", borderBottom:"1px solid rgba(14,165,233,0.07)", fontSize:10 }}>
                               <span style={{ color:"#4a7fa5", fontSize:9 }}>{k}</span>
                               <span style={{ color:c }}>{v}</span>
@@ -416,11 +527,7 @@ export default function App() {
                               <span style={{ color:"#7eb8f7" }}>{zone.mean_vv_db} dB</span>
                             </div>
                           )}
-                          {zone.acquired && (
-                            <div style={{ marginTop:6, fontSize:8, color:"#2d5a7a" }}>
-                              ACQ {zone.acquired.slice(0,16).replace("T"," ")} UTC
-                            </div>
-                          )}
+                          {zone.acquired && <div style={{ marginTop:6, fontSize:8, color:"#2d5a7a" }}>ACQ {zone.acquired.slice(0,16).replace("T"," ")} UTC</div>}
                           {crit && <div style={{ marginTop:6, padding:"3px 6px", background:"rgba(255,59,59,0.15)", border:"1px solid rgba(255,59,59,0.3)", borderRadius:3, color:"#ff9f9f", fontSize:9 }}>⚠ CRITICAL — IMMEDIATE ATTENTION</div>}
                         </div>
                       </Popup>
@@ -428,7 +535,18 @@ export default function App() {
                   );
                 })}
               </MapContainer>
-              <div style={{ position:"absolute", bottom:8, left:10, fontSize:9, color:"rgba(14,165,233,0.5)", letterSpacing:"0.08em", zIndex:1000, pointerEvents:"none" }}>
+
+              {/* Heatmap toggle */}
+              <button onClick={()=>setHeatmapOn(h=>!h)} style={{
+                position:"absolute", top:10, left:50, zIndex:1000,
+                background:heatmapOn?"rgba(14,165,233,0.25)":"rgba(5,13,26,0.85)",
+                border:`1px solid ${heatmapOn?"#0ea5e9":"rgba(14,165,233,0.3)"}`,
+                color:heatmapOn?"#0ea5e9":"#4a7fa5", borderRadius:4, padding:"5px 10px",
+                fontSize:9, cursor:"pointer", fontFamily:"inherit", letterSpacing:"0.08em",
+                transition:"all 0.2s",
+              }}>🌡 {heatmapOn?"HEATMAP ON":"HEATMAP OFF"}</button>
+
+              <div style={{ position:"absolute", bottom:8, left:10, fontSize:9, color:"rgba(14,165,233,0.5)", zIndex:1000, pointerEvents:"none" }}>
                 GLOBAL OCEAN VIEW · CARTO DARK MATTER · {filtered.length} ZONES
               </div>
               <div style={{ position:"absolute", bottom:8, right:10, fontSize:9, color:"rgba(14,165,233,0.4)", zIndex:1000, pointerEvents:"none" }}>
@@ -437,64 +555,113 @@ export default function App() {
               {/* Legend */}
               <div style={{ position:"absolute", top:10, right:10, zIndex:1000, background:"rgba(5,13,26,0.88)", border:"1px solid rgba(14,165,233,0.15)", borderRadius:5, padding:"8px 10px", fontSize:9 }}>
                 <div style={{ color:"#2d5a7a", letterSpacing:"0.1em", marginBottom:5 }}>LEGEND</div>
-                {Object.entries(POLLUTION_TYPES).map(([k,v]) => (
+                {Object.entries(POLLUTION_TYPES).map(([k,v])=>(
                   <div key={k} style={{ display:"flex", alignItems:"center", gap:5, marginBottom:3, color:v.color }}>
-                    <div style={{ width:8, height:8, borderRadius:"50%", background:v.color }}/>
-                    <span style={{ fontSize:8 }}>{v.label}</span>
+                    <div style={{ width:8, height:8, borderRadius:"50%", background:v.color }}/><span style={{fontSize:8}}>{v.label}</span>
                   </div>
                 ))}
                 <div style={{ marginTop:5, borderTop:"1px solid rgba(14,165,233,0.1)", paddingTop:4, color:"#4a7fa5", fontSize:8 }}>
-                  <div>● Solid = Sentinel-1 SAR</div>
-                  <div>● Dashed = Fallback</div>
+                  <div>● Solid = Sentinel-1 SAR</div><div>● Dashed = Fallback</div>
                 </div>
               </div>
             </div>
           )}
 
-          {/* ANALYTICS TAB */}
+          {/* ── ANALYTICS TAB ── */}
           {tab==="analytics" && (
             <div style={{ padding:20, height:"100%", overflowY:"auto" }}>
-              <div style={{ fontFamily:"Syne,sans-serif",fontWeight:700,fontSize:17,color:"#e0f2fe",marginBottom:18,letterSpacing:"0.05em" }}>ANALYTICS DASHBOARD</div>
-              <div style={{ display:"grid",gridTemplateColumns:"1fr 1fr",gap:14,marginBottom:14 }}>
+              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:18 }}>
+                <div style={{ fontFamily:"Syne,sans-serif", fontWeight:700, fontSize:17, color:"#e0f2fe" }}>ANALYTICS DASHBOARD</div>
+                <div style={{ display:"flex", gap:6 }}>
+                  {[7,14,30].map(d=>(
+                    <button key={d} onClick={()=>setTrendDays(d)} style={{
+                      padding:"3px 10px", borderRadius:3, fontSize:9, cursor:"pointer", fontFamily:"inherit",
+                      border:`1px solid ${trendDays===d?"#0ea5e9":"rgba(14,165,233,0.2)"}`,
+                      background:trendDays===d?"rgba(14,165,233,0.15)":"transparent",
+                      color:trendDays===d?"#0ea5e9":"#4a7fa5",
+                    }}>{d}D</button>
+                  ))}
+                  <button onClick={exportCSV} style={{ padding:"3px 10px", borderRadius:3, fontSize:9, cursor:"pointer", fontFamily:"inherit", border:"1px solid rgba(6,214,160,0.3)", background:"rgba(6,214,160,0.08)", color:"#06d6a0" }}>↓ EXPORT</button>
+                </div>
+              </div>
+
+              {/* Overview charts */}
+              <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:14, marginBottom:14 }}>
                 {[
-                  { label:"DAILY SEVERITY (12 DAYS)",      data:[42,58,61,55,70,67,75,72,80,78,85,89], color:"#0ea5e9" },
+                  { label:"DAILY SEVERITY (12 DAYS)", data:[42,58,61,55,70,67,75,72,80,78,85,89], color:"#0ea5e9" },
                   { label:"POLLUTED AREA km² (12 MONTHS)", data:[310,328,345,340,365,380,370,392,405,418,430,449], color:"#c77dff" },
-                ].map(({label,data,color}) => (
-                  <div key={label} style={{ background:"rgba(14,165,233,0.03)",border:"1px solid rgba(14,165,233,0.09)",borderRadius:6,padding:14 }}>
-                    <div style={{ fontSize:9,color:"#2d5a7a",letterSpacing:"0.18em",marginBottom:10 }}>{label}</div>
+                ].map(({label,data,color})=>(
+                  <div key={label} style={{ background:"rgba(14,165,233,0.03)", border:"1px solid rgba(14,165,233,0.09)", borderRadius:6, padding:14 }}>
+                    <div style={{ fontSize:9, color:"#2d5a7a", letterSpacing:"0.18em", marginBottom:10 }}>{label}</div>
                     <MiniChart data={data} color={color} height={72}/>
                   </div>
                 ))}
               </div>
-              <div style={{ background:"rgba(14,165,233,0.03)",border:"1px solid rgba(14,165,233,0.09)",borderRadius:6,padding:14,marginBottom:14 }}>
-                <div style={{ fontSize:9,color:"#2d5a7a",letterSpacing:"0.18em",marginBottom:12 }}>MULTI-CLASS DETECTION BREAKDOWN</div>
-                <div style={{ display:"grid",gridTemplateColumns:"repeat(5,1fr)",gap:10 }}>
-                  {Object.entries(POLLUTION_TYPES).map(([key,val]) => {
+
+              {/* ── TREND ANALYTICS ── */}
+              <div style={{ background:"rgba(14,165,233,0.03)", border:"1px solid rgba(14,165,233,0.09)", borderRadius:6, padding:14, marginBottom:14 }}>
+                <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:14 }}>
+                  <div style={{ fontSize:9, color:"#2d5a7a", letterSpacing:"0.18em" }}>REGION TREND ANALYTICS — LAST {trendDays} DAYS</div>
+                  <div style={{ fontSize:8, color:"#0ea5e9" }}>📡 Live from SQLite</div>
+                </div>
+                {trends.length === 0 ? (
+                  <div style={{ textAlign:"center", padding:"20px 0", fontSize:10, color:"#2d5a7a" }}>Loading trend data from API...</div>
+                ) : (
+                  <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(200px,1fr))", gap:12 }}>
+                    {trends.slice(0,12).map((t,i)=>{
+                      const pt=POLLUTION_TYPES[t.class_name]||POLLUTION_TYPES.oil_spill;
+                      return (
+                        <div key={i} style={{ background:"rgba(5,13,26,0.6)", border:`1px solid ${pt.color}22`, borderRadius:5, padding:10 }}>
+                          <div style={{ display:"flex", justifyContent:"space-between", marginBottom:6 }}>
+                            <div>
+                              <div style={{ fontSize:10, color:"#c8deff", marginBottom:1 }}>{t.region}</div>
+                              <div style={{ fontSize:8, color:pt.color }}>● {pt.label}</div>
+                            </div>
+                            <div style={{ textAlign:"right" }}>
+                              <div style={{ fontSize:14, fontWeight:700, fontFamily:"Syne,sans-serif", color:t.latest>=80?"#ff3b3b":t.latest>=60?"#ff9f1c":"#06d6a0" }}>{t.latest}</div>
+                              <div style={{ fontSize:8, color:t.change>0?"#ff3b3b":"#06d6a0" }}>{t.change>0?"▲+":t.change<0?"▼":""}{t.change}</div>
+                            </div>
+                          </div>
+                          <TrendChart series={t.series} color={pt.color} height={50}/>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+
+              {/* Multi-class breakdown */}
+              <div style={{ background:"rgba(14,165,233,0.03)", border:"1px solid rgba(14,165,233,0.09)", borderRadius:6, padding:14, marginBottom:14 }}>
+                <div style={{ fontSize:9, color:"#2d5a7a", letterSpacing:"0.18em", marginBottom:12 }}>MULTI-CLASS DETECTION BREAKDOWN</div>
+                <div style={{ display:"grid", gridTemplateColumns:"repeat(5,1fr)", gap:10 }}>
+                  {Object.entries(POLLUTION_TYPES).map(([key,val])=>{
                     const zones=currentZones.filter(z=>z.type===key);
                     const pct=zones.length?Math.round(zones.reduce((s,z)=>s+z.severity,0)/zones.length):0;
                     return (
-                      <div key={key} style={{ textAlign:"center",padding:"10px 6px",background:val.bg,border:`1px solid ${val.color}33`,borderRadius:4 }}>
+                      <div key={key} style={{ textAlign:"center", padding:"10px 6px", background:val.bg, border:`1px solid ${val.color}33`, borderRadius:4 }}>
                         <SeverityRing value={pct} size={48} color={val.color}/>
-                        <div style={{ fontSize:17,fontFamily:"Syne,sans-serif",fontWeight:700,color:val.color,marginTop:-34,marginBottom:30 }}>{pct}</div>
-                        <div style={{ fontSize:8,color:val.color,letterSpacing:"0.08em" }}>{val.label.toUpperCase().split(" ")[0]}</div>
-                        <div style={{ fontSize:9,color:"#4a7fa5",marginTop:2 }}>{zones.length} zone{zones.length!==1?"s":""}</div>
+                        <div style={{ fontSize:17, fontFamily:"Syne,sans-serif", fontWeight:700, color:val.color, marginTop:-34, marginBottom:30 }}>{pct}</div>
+                        <div style={{ fontSize:8, color:val.color, letterSpacing:"0.08em" }}>{val.label.toUpperCase().split(" ")[0]}</div>
+                        <div style={{ fontSize:9, color:"#4a7fa5", marginTop:2 }}>{zones.length} zone{zones.length!==1?"s":""}</div>
                       </div>
                     );
                   })}
                 </div>
               </div>
-              <div style={{ background:"rgba(14,165,233,0.03)",border:"1px solid rgba(14,165,233,0.09)",borderRadius:6,padding:14 }}>
-                <div style={{ fontSize:9,color:"#2d5a7a",letterSpacing:"0.18em",marginBottom:12 }}>REGION COMPARISON</div>
-                {currentZones.sort((a,b)=>b.severity-a.severity).map(zone => {
+
+              {/* Region comparison */}
+              <div style={{ background:"rgba(14,165,233,0.03)", border:"1px solid rgba(14,165,233,0.09)", borderRadius:6, padding:14 }}>
+                <div style={{ fontSize:9, color:"#2d5a7a", letterSpacing:"0.18em", marginBottom:12 }}>REGION COMPARISON</div>
+                {currentZones.sort((a,b)=>b.severity-a.severity).map(zone=>{
                   const pt=POLLUTION_TYPES[zone.type];
                   return (
                     <div key={zone.id} style={{ marginBottom:9 }}>
-                      <div style={{ display:"flex",justifyContent:"space-between",fontSize:10,marginBottom:3 }}>
+                      <div style={{ display:"flex", justifyContent:"space-between", fontSize:10, marginBottom:3 }}>
                         <span style={{ color:"#c8deff" }}>{zone.name} {zone.source==="Sentinel-1 SAR"&&<span style={{color:"#0ea5e9",fontSize:8}}>🛰</span>}</span>
                         <span style={{ color:pt.color }}>{zone.severity}/100</span>
                       </div>
-                      <div style={{ height:4,background:"rgba(255,255,255,0.05)",borderRadius:2,overflow:"hidden" }}>
-                        <div style={{ height:"100%",width:`${zone.severity}%`,borderRadius:2,background:`linear-gradient(90deg,${pt.color}77,${pt.color})`,transition:"width 0.8s" }}/>
+                      <div style={{ height:4, background:"rgba(255,255,255,0.05)", borderRadius:2, overflow:"hidden" }}>
+                        <div style={{ height:"100%", width:`${zone.severity}%`, borderRadius:2, background:`linear-gradient(90deg,${pt.color}77,${pt.color})`, transition:"width 0.8s" }}/>
                       </div>
                     </div>
                   );
@@ -503,108 +670,115 @@ export default function App() {
             </div>
           )}
 
-          {/* AI ENGINE TAB */}
+          {/* ── AI ENGINE TAB ── */}
           {tab==="detection" && (
             <div style={{ padding:20, height:"100%", overflowY:"auto" }}>
-              <div style={{ fontFamily:"Syne,sans-serif",fontWeight:700,fontSize:17,color:"#e0f2fe",marginBottom:18 }}>AI DETECTION ENGINE</div>
-              <div style={{ display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:14,marginBottom:16 }}>
+              <div style={{ fontFamily:"Syne,sans-serif", fontWeight:700, fontSize:17, color:"#e0f2fe", marginBottom:18 }}>AI DETECTION ENGINE</div>
+              <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:14, marginBottom:16 }}>
                 {[
                   { name:"YOLOv8m", role:"Fast Detection",     acc:81, speed:"23ms",  desc:"Real-time bounding box detection — mAP50 0.812 on 4600+ satellite images", color:"#0ea5e9" },
                   { name:"U-Net",   role:"Pixel Segmentation",  acc:94, speed:"180ms", desc:"Precise boundary mapping via ResNet34 encoder (Phase 2 — coming soon)", color:"#c77dff" },
                   { name:"ViT",     role:"Transformer Accuracy",acc:96, speed:"340ms", desc:"Vision Transformer for contextual SAR pattern recognition", color:"#06d6a0" },
-                ].map(m => (
-                  <div key={m.name} style={{ background:`${m.color}08`,border:`1px solid ${m.color}22`,borderRadius:6,padding:14 }}>
-                    <div style={{ fontFamily:"Syne,sans-serif",fontWeight:700,fontSize:16,color:m.color,marginBottom:3 }}>{m.name}</div>
-                    <div style={{ fontSize:9,color:"#4a7fa5",letterSpacing:"0.13em",marginBottom:10 }}>{m.role.toUpperCase()}</div>
-                    <div style={{ fontSize:11,color:"#7ba8c8",marginBottom:10,lineHeight:1.6 }}>{m.desc}</div>
-                    {[["Accuracy",m.acc+"%"],["Inference",m.speed]].map(([k,v]) => (
-                      <div key={k} style={{ display:"flex",justifyContent:"space-between",padding:"4px 0",borderBottom:"1px solid rgba(255,255,255,0.04)",fontSize:10 }}>
-                        <span style={{ color:"#4a7fa5",fontSize:9,letterSpacing:"0.08em" }}>{k.toUpperCase()}</span>
+                ].map(m=>(
+                  <div key={m.name} style={{ background:`${m.color}08`, border:`1px solid ${m.color}22`, borderRadius:6, padding:14 }}>
+                    <div style={{ fontFamily:"Syne,sans-serif", fontWeight:700, fontSize:16, color:m.color, marginBottom:3 }}>{m.name}</div>
+                    <div style={{ fontSize:9, color:"#4a7fa5", letterSpacing:"0.13em", marginBottom:10 }}>{m.role.toUpperCase()}</div>
+                    <div style={{ fontSize:11, color:"#7ba8c8", marginBottom:10, lineHeight:1.6 }}>{m.desc}</div>
+                    {[["Accuracy",m.acc+"%"],["Inference",m.speed]].map(([k,v])=>(
+                      <div key={k} style={{ display:"flex", justifyContent:"space-between", padding:"4px 0", borderBottom:"1px solid rgba(255,255,255,0.04)", fontSize:10 }}>
+                        <span style={{ color:"#4a7fa5", fontSize:9 }}>{k.toUpperCase()}</span>
                         <span style={{ color:m.color }}>{v}</span>
                       </div>
                     ))}
                   </div>
                 ))}
               </div>
-              <div style={{ display:"grid",gridTemplateColumns:"1fr 1fr",gap:14,marginBottom:14 }}>
-                <div style={{ background:"rgba(14,165,233,0.03)",border:"1px solid rgba(14,165,233,0.09)",borderRadius:6,padding:14 }}>
-                  <div style={{ fontSize:9,color:"#2d5a7a",letterSpacing:"0.18em",marginBottom:10 }}>SATELLITE DATA SOURCES</div>
+              <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:14, marginBottom:14 }}>
+                <div style={{ background:"rgba(14,165,233,0.03)", border:"1px solid rgba(14,165,233,0.09)", borderRadius:6, padding:14 }}>
+                  <div style={{ fontSize:9, color:"#2d5a7a", letterSpacing:"0.18em", marginBottom:10 }}>SATELLITE DATA SOURCES</div>
                   {[
-                    { name:"Sentinel-1 SAR", desc:`${satZones} active zones · C-band SAR backscatter · 10m resolution`, status:"LIVE", color:"#06d6a0" },
-                    { name:"Landsat-8 OLI",  desc:"Optical multispectral · 30m resolution · cloud permitting",            status:"READY", color:"#ff9f1c" },
-                    { name:"MODIS Terra",    desc:"Daily global coverage · 250m–1km · sea surface temperature",            status:"READY", color:"#c77dff" },
-                  ].map(s => (
-                    <div key={s.name} style={{ marginBottom:10,padding:9,background:`${s.color}08`,border:`1px solid ${s.color}20`,borderRadius:4 }}>
-                      <div style={{ display:"flex",justifyContent:"space-between",marginBottom:3 }}>
-                        <span style={{ fontSize:11,color:"#c8deff" }}>{s.name}</span>
-                        <span style={{ fontSize:8,color:s.color,letterSpacing:"0.1em" }}>● {s.status}</span>
+                    { name:"Sentinel-1 SAR", desc:`${satZones} active zones · C-band SAR · 10m resolution`, status:"LIVE", color:"#06d6a0" },
+                    { name:"Landsat-8 OLI",  desc:"Optical multispectral · 30m resolution",                 status:"READY", color:"#ff9f1c" },
+                    { name:"MODIS Terra",    desc:"Daily global · 250m–1km · sea surface temperature",      status:"READY", color:"#c77dff" },
+                  ].map(s=>(
+                    <div key={s.name} style={{ marginBottom:10, padding:9, background:`${s.color}08`, border:`1px solid ${s.color}20`, borderRadius:4 }}>
+                      <div style={{ display:"flex", justifyContent:"space-between", marginBottom:3 }}>
+                        <span style={{ fontSize:11, color:"#c8deff" }}>{s.name}</span>
+                        <span style={{ fontSize:8, color:s.color }}>● {s.status}</span>
                       </div>
-                      <div style={{ fontSize:9,color:"#4a7fa5",lineHeight:1.6 }}>{s.desc}</div>
+                      <div style={{ fontSize:9, color:"#4a7fa5", lineHeight:1.6 }}>{s.desc}</div>
                     </div>
                   ))}
                 </div>
-                <div style={{ background:"rgba(255,159,28,0.04)",border:"1px solid rgba(255,159,28,0.1)",borderRadius:6,padding:14 }}>
-                  <div style={{ fontSize:9,color:"#2d5a7a",letterSpacing:"0.18em",marginBottom:10 }}>GRAD-CAM EXPLAINABILITY</div>
-                  <div style={{ fontSize:10,color:"#7ba8c8",lineHeight:1.7,marginBottom:10 }}>
+                <div style={{ background:"rgba(255,159,28,0.04)", border:"1px solid rgba(255,159,28,0.1)", borderRadius:6, padding:14 }}>
+                  <div style={{ fontSize:9, color:"#2d5a7a", letterSpacing:"0.18em", marginBottom:10 }}>GRAD-CAM EXPLAINABILITY</div>
+                  <div style={{ fontSize:10, color:"#7ba8c8", lineHeight:1.7, marginBottom:10 }}>
                     Gradient-weighted Class Activation Mapping highlights which SAR image regions drove each AI detection decision.
                   </div>
-                  <div style={{ display:"flex",gap:7 }}>
-                    {["SAR Input","Grad-CAM","Overlay"].map((l,i) => (
-                      <div key={i} style={{ flex:1,height:58,borderRadius:3,display:"flex",alignItems:"flex-end",justifyContent:"center",paddingBottom:4,fontSize:7,color:"#ff9f1c",letterSpacing:"0.07em",border:"1px solid rgba(255,159,28,0.2)",background:i===0?"linear-gradient(135deg,#042149,#031d3b)":i===1?"linear-gradient(135deg,#7f0000,#ff4500,#ffff00)":"linear-gradient(135deg,#021428,rgba(255,69,0,0.4))" }}>
+                  <div style={{ display:"flex", gap:7 }}>
+                    {["SAR Input","Grad-CAM","Overlay"].map((l,i)=>(
+                      <div key={i} style={{ flex:1, height:58, borderRadius:3, display:"flex", alignItems:"flex-end", justifyContent:"center", paddingBottom:4, fontSize:7, color:"#ff9f1c", letterSpacing:"0.07em", border:"1px solid rgba(255,159,28,0.2)", background:i===0?"linear-gradient(135deg,#042149,#031d3b)":i===1?"linear-gradient(135deg,#7f0000,#ff4500,#ffff00)":"linear-gradient(135deg,#021428,rgba(255,69,0,0.4))" }}>
                         {l.toUpperCase()}
                       </div>
                     ))}
                   </div>
-                  <div style={{ marginTop:8,fontSize:9,color:"#4a7fa5" }}>Avg Confidence: <span style={{ color:"#ff9f1c" }}>87.4%</span></div>
+                  <div style={{ marginTop:8, fontSize:9, color:"#4a7fa5" }}>Avg Confidence: <span style={{color:"#ff9f1c"}}>87.4%</span></div>
                 </div>
               </div>
-              <div style={{ background:"rgba(6,214,160,0.03)",border:"1px solid rgba(6,214,160,0.1)",borderRadius:6,padding:14 }}>
-                <div style={{ fontSize:9,color:"#2d5a7a",letterSpacing:"0.18em",marginBottom:10 }}>PREDICTION ENGINE</div>
+              <div style={{ background:"rgba(6,214,160,0.03)", border:"1px solid rgba(6,214,160,0.1)", borderRadius:6, padding:14 }}>
+                <div style={{ fontSize:9, color:"#2d5a7a", letterSpacing:"0.18em", marginBottom:10 }}>PREDICTION ENGINE</div>
                 {[
-                  { name:"LSTM Forecaster",             desc:"Temporal sequence modeling — 48hr spread direction & velocity",  status:"MOCK" },
-                  { name:"Transformer Forecaster",       desc:"Attention-based future state estimation across ocean currents",   status:"MOCK" },
-                  { name:"GEE Background Refresh",       desc:`Sentinel-1 re-fetch every 6hrs · last ${satZones} zones loaded`, status:"ACTIVE" },
-                ].map(m => (
-                  <div key={m.name} style={{ marginBottom:8,padding:9,background:"rgba(6,214,160,0.04)",border:"1px solid rgba(6,214,160,0.1)",borderRadius:4,display:"flex",justifyContent:"space-between",alignItems:"flex-start" }}>
+                  { name:"LSTM Forecaster",       desc:"Temporal sequence modeling — 48hr spread direction & velocity", status:"MOCK" },
+                  { name:"Transformer Forecaster", desc:"Attention-based future state estimation across ocean currents",  status:"MOCK" },
+                  { name:"GEE Background Refresh", desc:`Sentinel-1 re-fetch every 6hrs · ${satZones} zones loaded`,     status:"ACTIVE" },
+                  { name:"SQLite Trend History",   desc:`30-day severity history per zone · ${trendDays}-day view active`, status:"ACTIVE" },
+                ].map(m=>(
+                  <div key={m.name} style={{ marginBottom:8, padding:9, background:"rgba(6,214,160,0.04)", border:"1px solid rgba(6,214,160,0.1)", borderRadius:4, display:"flex", justifyContent:"space-between", alignItems:"flex-start" }}>
                     <div>
-                      <div style={{ fontSize:11,color:"#c8deff",marginBottom:2 }}>{m.name}</div>
-                      <div style={{ fontSize:9,color:"#4a7fa5",lineHeight:1.6 }}>{m.desc}</div>
+                      <div style={{ fontSize:11, color:"#c8deff", marginBottom:2 }}>{m.name}</div>
+                      <div style={{ fontSize:9, color:"#4a7fa5", lineHeight:1.6 }}>{m.desc}</div>
                     </div>
-                    <span style={{ fontSize:8,color:m.status==="ACTIVE"?"#06d6a0":"#ff9f1c",letterSpacing:"0.1em",flexShrink:0,marginLeft:8 }}>● {m.status}</span>
+                    <span style={{ fontSize:8, color:m.status==="ACTIVE"?"#06d6a0":"#ff9f1c", letterSpacing:"0.1em", flexShrink:0, marginLeft:8 }}>● {m.status}</span>
                   </div>
                 ))}
               </div>
             </div>
           )}
 
-          {/* ALERTS TAB */}
+          {/* ── ALERTS TAB ── */}
           {tab==="alerts" && (
             <div style={{ padding:20, height:"100%", overflowY:"auto" }}>
-              <div style={{ fontFamily:"Syne,sans-serif",fontWeight:700,fontSize:17,color:"#e0f2fe",marginBottom:6 }}>SMART ALERT SYSTEM</div>
-              <div style={{ fontSize:9,color:"#2d5a7a",marginBottom:18,letterSpacing:"0.08em" }}>
+              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:6 }}>
+                <div style={{ fontFamily:"Syne,sans-serif", fontWeight:700, fontSize:17, color:"#e0f2fe" }}>SMART ALERT SYSTEM</div>
+                <div style={{ display:"flex", gap:6 }}>
+                  <button onClick={exportCSV} style={{ padding:"3px 10px", borderRadius:3, fontSize:9, cursor:"pointer", fontFamily:"inherit", border:"1px solid rgba(6,214,160,0.3)", background:"rgba(6,214,160,0.08)", color:"#06d6a0" }}>↓ CSV</button>
+                  <button onClick={exportJSON} style={{ padding:"3px 10px", borderRadius:3, fontSize:9, cursor:"pointer", fontFamily:"inherit", border:"1px solid rgba(199,125,255,0.3)", background:"rgba(199,125,255,0.08)", color:"#c77dff" }}>↓ JSON</button>
+                </div>
+              </div>
+              <div style={{ fontSize:9, color:"#2d5a7a", marginBottom:18, letterSpacing:"0.08em" }}>
                 {liveAlerts.length>0?`${liveAlerts.length} LIVE ALERTS FROM API`:`${currentZones.length} ZONES MONITORED · ${critCount} CRITICAL`}
               </div>
-              {currentZones.sort((a,b)=>b.severity-a.severity).map((zone,i) => {
+              {currentZones.sort((a,b)=>b.severity-a.severity).map((zone,i)=>{
                 const pt=POLLUTION_TYPES[zone.type];
                 const level=zone.severity>=80?"CRITICAL":zone.severity>=60?"HIGH":"MONITOR";
                 const lc=zone.severity>=80?"#ff3b3b":zone.severity>=60?"#ff9f1c":"#0ea5e9";
                 return (
-                  <div key={zone.id} style={{ marginBottom:11,padding:14,borderRadius:6,background:`${pt.color}05`,border:`1px solid ${lc}2a`,animation:`fadeUp 0.3s ease ${i*0.05}s both` }}>
-                    <div style={{ display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:7 }}>
-                      <div style={{ display:"flex",alignItems:"center",gap:9,flexWrap:"wrap" }}>
-                        <div style={{ padding:"2px 7px",borderRadius:3,fontSize:9,background:`${lc}15`,border:`1px solid ${lc}44`,color:lc,letterSpacing:"0.1em" }}>{level}</div>
-                        <div style={{ fontFamily:"Syne,sans-serif",fontWeight:700,color:"#e0f2fe",fontSize:12 }}>{zone.name}</div>
-                        <div style={{ fontSize:9,color:pt.color,letterSpacing:"0.08em" }}>● {pt.label}</div>
-                        {zone.source==="Sentinel-1 SAR" && <div style={{ fontSize:8,color:"#0ea5e9" }}>🛰 S1-SAR</div>}
+                  <div key={zone.id} style={{ marginBottom:11, padding:14, borderRadius:6, background:`${pt.color}05`, border:`1px solid ${lc}2a`, animation:`fadeUp 0.3s ease ${i*0.04}s both` }}>
+                    <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:7 }}>
+                      <div style={{ display:"flex", alignItems:"center", gap:9, flexWrap:"wrap" }}>
+                        <div style={{ padding:"2px 7px", borderRadius:3, fontSize:9, background:`${lc}15`, border:`1px solid ${lc}44`, color:lc }}>{level}</div>
+                        <div style={{ fontFamily:"Syne,sans-serif", fontWeight:700, color:"#e0f2fe", fontSize:12 }}>{zone.name}</div>
+                        <div style={{ fontSize:9, color:pt.color }}>● {pt.label}</div>
+                        {zone.source==="Sentinel-1 SAR" && <div style={{ fontSize:8, color:"#0ea5e9" }}>🛰 S1-SAR</div>}
                       </div>
-                      <div style={{ fontFamily:"Syne,sans-serif",fontWeight:700,fontSize:19,color:lc,flexShrink:0 }}>{zone.severity}<span style={{ fontSize:9,color:"#4a7fa5" }}>/100</span></div>
+                      <div style={{ fontFamily:"Syne,sans-serif", fontWeight:700, fontSize:19, color:lc, flexShrink:0 }}>{zone.severity}<span style={{fontSize:9,color:"#4a7fa5"}}>/100</span></div>
                     </div>
-                    <div style={{ fontSize:10,color:"#7ba8c8",marginBottom:7 }}>
-                      {pt.label} detected · Area: {zone.area} km² · Spread: {zone.trend>0?"+":""}{zone.trend} km²/day · AI Confidence: {zone.confidence}%
+                    <div style={{ fontSize:10, color:"#7ba8c8", marginBottom:7 }}>
+                      {pt.label} · Area: {zone.area} km² · Spread: {zone.trend>0?"+":""}{zone.trend} km²/day · Confidence: {zone.confidence}%
                       {zone.acquired && ` · Acquired: ${zone.acquired.slice(0,10)}`}
                     </div>
-                    <div style={{ padding:"5px 9px",borderRadius:3,fontSize:9,background:"rgba(14,165,233,0.05)",border:"1px solid rgba(14,165,233,0.09)",color:"#4a7fa5",fontStyle:"italic" }}>
-                      🔮 {zone.type==="oil_spill"?`Spill expanding ~${zone.trend*2} km² in 24hrs, moving with ocean currents`:zone.type==="plastic_waste"?"Accumulation zone — coastal impact risk in 72hrs":zone.type==="algae_bloom"?"Bloom area — monitoring oxygen depletion risk":"Chemical concentration — monitoring advised"}
+                    <div style={{ padding:"5px 9px", borderRadius:3, fontSize:9, background:"rgba(14,165,233,0.05)", border:"1px solid rgba(14,165,233,0.09)", color:"#4a7fa5", fontStyle:"italic" }}>
+                      🔮 {zone.type==="oil_spill"?`Spill expanding ~${zone.trend*2} km² in 24hrs`:zone.type==="plastic_waste"?"Accumulation — coastal impact risk in 72hrs":zone.type==="algae_bloom"?"Bloom — monitoring oxygen depletion risk":zone.type==="chemical_pollution"?"Chemical concentration — industrial monitoring advised":"Marine debris — drift pattern analysis active"}
                     </div>
                   </div>
                 );
@@ -615,40 +789,40 @@ export default function App() {
       </div>
 
       {/* Chatbot */}
-      <div style={{ position:"fixed",bottom:20,right:20,zIndex:200,display:"flex",flexDirection:"column",alignItems:"flex-end",gap:10 }}>
+      <div style={{ position:"fixed", bottom:20, right:20, zIndex:200, display:"flex", flexDirection:"column", alignItems:"flex-end", gap:10 }}>
         {chatOpen && (
-          <div style={{ width:310,height:420,background:"rgba(5,13,26,0.97)",backdropFilter:"blur(16px)",border:"1px solid rgba(14,165,233,0.2)",borderRadius:8,display:"flex",flexDirection:"column",boxShadow:"0 0 36px rgba(14,165,233,0.1)",animation:"fadeUp 0.25s ease" }}>
-            <div style={{ padding:"10px 14px",borderBottom:"1px solid rgba(14,165,233,0.1)",display:"flex",justifyContent:"space-between",alignItems:"center" }}>
+          <div style={{ width:310, height:420, background:"rgba(5,13,26,0.97)", backdropFilter:"blur(16px)", border:"1px solid rgba(14,165,233,0.2)", borderRadius:8, display:"flex", flexDirection:"column", boxShadow:"0 0 36px rgba(14,165,233,0.1)", animation:"fadeUp 0.25s ease" }}>
+            <div style={{ padding:"10px 14px", borderBottom:"1px solid rgba(14,165,233,0.1)", display:"flex", justifyContent:"space-between", alignItems:"center" }}>
               <div>
-                <div style={{ fontFamily:"Syne,sans-serif",fontWeight:700,fontSize:11,color:"#0ea5e9" }}>OCEANAI ASSISTANT</div>
-                <div style={{ fontSize:8,color:"#2d5a7a",letterSpacing:"0.15em" }}>{satZones>0?`🛰 ${satZones} SENTINEL-1 ZONES LIVE`:"AI POWERED · ONLINE"}</div>
+                <div style={{ fontFamily:"Syne,sans-serif", fontWeight:700, fontSize:11, color:"#0ea5e9" }}>OCEANAI ASSISTANT</div>
+                <div style={{ fontSize:8, color:"#2d5a7a", letterSpacing:"0.15em" }}>{satZones>0?`🛰 ${satZones} SENTINEL-1 ZONES LIVE`:"AI POWERED · ONLINE"}</div>
               </div>
-              <button onClick={()=>setChatOpen(false)} style={{ background:"none",border:"none",color:"#4a7fa5",cursor:"pointer",fontSize:13 }}>✕</button>
+              <button onClick={()=>setChatOpen(false)} style={{ background:"none", border:"none", color:"#4a7fa5", cursor:"pointer", fontSize:13 }}>✕</button>
             </div>
-            <div style={{ flex:1,overflowY:"auto",padding:10,display:"flex",flexDirection:"column",gap:7 }}>
-              {messages.map((m,i) => (
-                <div key={i} style={{ maxWidth:"86%",alignSelf:m.role==="user"?"flex-end":"flex-start" }}>
-                  {m.role==="ai" && <div style={{ fontSize:8,color:"#0ea5e9",marginBottom:2,letterSpacing:"0.1em" }}>OCEANAI</div>}
-                  <div style={{ padding:"7px 10px",borderRadius:m.role==="user"?"8px 8px 2px 8px":"8px 8px 8px 2px",background:m.role==="user"?"rgba(14,165,233,0.14)":"rgba(255,255,255,0.04)",border:`1px solid ${m.role==="user"?"rgba(14,165,233,0.22)":"rgba(255,255,255,0.05)"}`,fontSize:10,color:m.role==="user"?"#93c5fd":"#c8deff",lineHeight:1.6,whiteSpace:"pre-wrap" }}>{m.text}</div>
+            <div style={{ flex:1, overflowY:"auto", padding:10, display:"flex", flexDirection:"column", gap:7 }}>
+              {messages.map((m,i)=>(
+                <div key={i} style={{ maxWidth:"86%", alignSelf:m.role==="user"?"flex-end":"flex-start" }}>
+                  {m.role==="ai" && <div style={{ fontSize:8, color:"#0ea5e9", marginBottom:2 }}>OCEANAI</div>}
+                  <div style={{ padding:"7px 10px", borderRadius:m.role==="user"?"8px 8px 2px 8px":"8px 8px 8px 2px", background:m.role==="user"?"rgba(14,165,233,0.14)":"rgba(255,255,255,0.04)", border:`1px solid ${m.role==="user"?"rgba(14,165,233,0.22)":"rgba(255,255,255,0.05)"}`, fontSize:10, color:m.role==="user"?"#93c5fd":"#c8deff", lineHeight:1.6, whiteSpace:"pre-wrap" }}>{m.text}</div>
                 </div>
               ))}
               {typing && (
                 <div style={{ alignSelf:"flex-start" }}>
-                  <div style={{ fontSize:8,color:"#0ea5e9",marginBottom:2 }}>OCEANAI</div>
-                  <div style={{ padding:"7px 10px",borderRadius:"8px 8px 8px 2px",background:"rgba(255,255,255,0.04)",border:"1px solid rgba(255,255,255,0.05)",fontSize:10,color:"#4a7fa5" }}>
+                  <div style={{ fontSize:8, color:"#0ea5e9", marginBottom:2 }}>OCEANAI</div>
+                  <div style={{ padding:"7px 10px", borderRadius:"8px 8px 8px 2px", background:"rgba(255,255,255,0.04)", border:"1px solid rgba(255,255,255,0.05)", fontSize:10, color:"#4a7fa5" }}>
                     <span style={{ animation:"blink 1s infinite" }}>▌</span> Analyzing...
                   </div>
                 </div>
               )}
               <div ref={chatEnd}/>
             </div>
-            <div style={{ padding:9,borderTop:"1px solid rgba(14,165,233,0.1)",display:"flex",gap:7 }}>
-              <input className="cinput" value={input} onChange={e=>setInput(e.target.value)} onKeyDown={e=>e.key==="Enter"&&sendChat()} placeholder="Ask about pollution zones..." style={{ flex:1,padding:"7px 9px",borderRadius:4,fontSize:10 }}/>
-              <button className="sbtn" onClick={sendChat} style={{ padding:"7px 11px",borderRadius:4,fontSize:10 }}>→</button>
+            <div style={{ padding:9, borderTop:"1px solid rgba(14,165,233,0.1)", display:"flex", gap:7 }}>
+              <input className="cinput" value={input} onChange={e=>setInput(e.target.value)} onKeyDown={e=>e.key==="Enter"&&sendChat()} placeholder="Ask about pollution..." style={{ flex:1, padding:"7px 9px", borderRadius:4, fontSize:10 }}/>
+              <button className="sbtn" onClick={sendChat} style={{ padding:"7px 11px", borderRadius:4, fontSize:10 }}>→</button>
             </div>
           </div>
         )}
-        <button onClick={()=>setChatOpen(o=>!o)} style={{ width:46,height:46,borderRadius:"50%",background:"linear-gradient(135deg,#0369a1,#0ea5e9)",border:"2px solid rgba(14,165,233,0.4)",cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",fontSize:19,boxShadow:"0 0 20px rgba(14,165,233,0.28)",transition:"transform 0.2s",transform:chatOpen?"rotate(45deg)":"none" }}>🤖</button>
+        <button onClick={()=>setChatOpen(o=>!o)} style={{ width:46, height:46, borderRadius:"50%", background:"linear-gradient(135deg,#0369a1,#0ea5e9)", border:"2px solid rgba(14,165,233,0.4)", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", fontSize:19, boxShadow:"0 0 20px rgba(14,165,233,0.28)", transition:"transform 0.2s", transform:chatOpen?"rotate(45deg)":"none" }}>🤖</button>
       </div>
     </div>
   );
